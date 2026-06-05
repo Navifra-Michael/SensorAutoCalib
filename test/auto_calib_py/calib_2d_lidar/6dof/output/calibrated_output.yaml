@@ -1,0 +1,35 @@
+reference_lidar: lidar_2
+lidar_count: 2
+lidars:
+  lidar_2:
+    x: -0.2
+    y: -0.1
+    z: 0.225
+    roll: 0.0
+    pitch: 0.0
+    yaw: 3.1276273659840443
+    optimized: false
+  lidar_1:
+    x: 0.30000000000000004
+    y: 0.11
+    z: 0.22499999999999998
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0959931088596881
+    score: 8.271342198974299
+    optimization_time_sec: 1037.5079553689575
+    success: true
+    optimized: true
+calibration_mode: sequential_fused_ndt_2d_lidar_odom_6dof_fast_accumulated_cloud
+match_mode: fast_accumulated_cloud
+calibration_order:
+- lidar_2
+- lidar_1
+odom_topic: /navi_robot_1/odom
+timing_sec:
+  collection: 3.053079925943166
+  per_lidar_optimization:
+    lidar_1: 1037.5079553689575
+  calibration: 1038.351304159034
+  total: 1041.4043840849772
+success: true

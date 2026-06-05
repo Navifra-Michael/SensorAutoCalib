@@ -1,0 +1,31 @@
+reference_lidar: lidar_1
+lidar_count: 2
+lidars:
+  lidar_1:
+    x: 0.367
+    y: 0.269
+    roll: 0.0
+    yaw: 0.7854
+    optimized: false
+  lidar_2:
+    x: -0.3689999999999988
+    y: -0.2650000000000003
+    roll: 0.0
+    yaw: -2.3439826952360563
+    initial_score: 7.132960973878644
+    score: 7.082377571873821
+    score_improvement: 0.05058340200482281
+    optimization_time_sec: 63.17622811801266
+    success: true
+    optimized: true
+success: true
+calibration_mode: sequential_fused_ndt
+calibration_order:
+- lidar_1
+- lidar_2
+timing_sec:
+  collection: 5.081306235049851
+  per_lidar_optimization:
+    lidar_2: 63.17622811801266
+  calibration: 64.11819855903741
+  total: 69.19950479408726

@@ -1,0 +1,16 @@
+topics:
+  lidar_1: /scan_front
+  lidar_2: /scan_rear
+lidars:
+  lidar_1:
+    x: 0.367
+    y: 0.269
+    z: 0.0
+    roll: 0.0
+    yaw: 0.7854
+  lidar_2:
+    x: -0.368999999999999
+    y: -0.2740000000000002
+    z: 0.0
+    roll: 0.0
+    yaw: -2.343982695236054

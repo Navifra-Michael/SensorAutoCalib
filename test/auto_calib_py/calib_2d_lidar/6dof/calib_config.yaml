@@ -1,0 +1,67 @@
+reference_lidar: lidar_2
+collect_duration_sec: 3.0
+require_odom: true
+match_mode: exact_odom_chunks
+output_dir: output
+output_yaml: calibrated_output.yaml
+calibrated_config_yaml: calibrated_config.yaml
+before_plot_png: before_calibration.png
+after_plot_png: after_calibration.png
+before_plot_xz_png: before_calibration_xz.png
+after_plot_xz_png: after_calibration_xz.png
+before_plot_yz_png: before_calibration_yz.png
+after_plot_yz_png: after_calibration_yz.png
+
+plot:
+  show_default_grid: true
+  max_points: 12000
+  progress_3d:
+    enabled: true
+    max_points: 3000
+    update_interval_sec: 1.0
+
+ndt:
+  resolution: 0.5
+  min_points_per_cell: 5
+  downsample_voxel: 0.2
+
+search:
+  stages:
+    - range_x: 0.20
+      range_y: 0.20
+      range_z: 0.10
+      range_roll_deg: 5.0
+      range_pitch_deg: 5.0
+      range_yaw_deg: 10.0
+      step_x: 0.10
+      step_y: 0.10
+      step_z: 0.05
+      step_roll_deg: 2.5
+      step_pitch_deg: 2.5
+      step_yaw_deg: 5.0
+
+    - range_x: 0.06
+      range_y: 0.06
+      range_z: 0.04
+      range_roll_deg: 1.5
+      range_pitch_deg: 1.5
+      range_yaw_deg: 3.0
+      step_x: 0.03
+      step_y: 0.03
+      step_z: 0.02
+      step_roll_deg: 0.75
+      step_pitch_deg: 0.75
+      step_yaw_deg: 1.0
+
+    - range_x: 0.02
+      range_y: 0.02
+      range_z: 0.02
+      range_roll_deg: 0.5
+      range_pitch_deg: 0.5
+      range_yaw_deg: 1.0
+      step_x: 0.01
+      step_y: 0.01
+      step_z: 0.01
+      step_roll_deg: 0.25
+      step_pitch_deg: 0.25
+      step_yaw_deg: 0.25
