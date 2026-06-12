@@ -8,6 +8,12 @@ after_plot_png: after_calibration.png
 
 collection:
   overlap_filter_voxel: 0.01
+  stable_filter:
+    enabled: true
+    voxel: 0.01
+    min_observations: 5
+    min_odom_translation: 0.05
+    min_odom_yaw_deg: 2.0
   odom_lookup_mode: timestamp
   odom_interpolation: true
   odom_max_time_diff_sec: 0.2

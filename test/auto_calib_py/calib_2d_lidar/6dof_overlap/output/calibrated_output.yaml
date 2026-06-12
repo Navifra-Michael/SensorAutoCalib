@@ -5,44 +5,44 @@ lidars:
     x: -0.2
     y: -0.1
     z: 0.225
-    roll: -0.06283185307179581
-    pitch: -0.01570796326794894
-    yaw: 3.1415899999999968
+    roll: -0.020769418098732624
+    pitch: 0.010122909661567042
+    yaw: 3.141589999999995
     optimized: true
-    initial_overlap_score: 0.01165351908086031
+    initial_overlap_score: 0.009235177955264113
     initial_overlap_success: true
-    initial_overlap_time_sec: 86.78121977699993
+    initial_overlap_time_sec: 55.79383486900042
     initial_overlap_pose:
       x: -0.2
       y: -0.1
       z: 0.225
-      roll: -0.06283185307179581
-      pitch: -0.01570796326794894
-      yaw: 3.1415899999999968
+      roll: -0.020769418098732624
+      pitch: 0.010122909661567042
+      yaw: 3.141589999999995
     success: true
     score: 0.0
   lidar_1:
-    x: 0.21000000000000005
-    y: 0.08999999999999998
+    x: 0.20000000000000004
+    y: 0.10999999999999999
     z: 0.225
-    roll: -0.11693705988362008
-    pitch: -0.13962634015954634
-    yaw: 0.0017453292519943701
+    roll: 1.3877787807814457e-17
+    pitch: -0.017453292519943278
+    yaw: -0.0013962634015947904
     optimized: true
-    initial_overlap_score: 0.01503432414740807
+    initial_overlap_score: 0.008138820762628106
     initial_overlap_success: true
-    initial_overlap_time_sec: 125.22454353099965
+    initial_overlap_time_sec: 49.753534723000485
     initial_overlap_pose:
       x: 0.2
       y: 0.1
       z: 0.225
-      roll: -0.09948376736367676
-      pitch: -0.08726646259971643
-      yaw: 0.0017453292519943667
-    initial_score: 16.457936203632688
-    score: 16.25645056378223
-    score_improvement: 0.20148563985045698
-    optimization_time_sec: 1569.0361502869991
+      roll: -0.06108652381980154
+      pitch: -0.06108652381980154
+      yaw: 0.0029670597283910356
+    initial_score: 1.6734326042758403
+    score: 1.6080434500171392
+    score_improvement: 0.06538915425870107
+    optimization_time_sec: 215.43861160099914
     success: true
 calibration_mode: initial_overlap_rpy_then_reference_alignment
 match_mode: initial_overlap_rpy_reference_cloud
@@ -52,16 +52,17 @@ initial_overlap_thickness_method: pca_line
 initial_overlap_score_projection: xy
 reference_score_projection: xy
 reference_project_cloud_to_xy: true
+reference_alignment_source: initial_overlap_cloud
 calibration_order:
 - lidar_2
 - lidar_1
 timing_sec:
-  collection: 122.3361111410004
+  collection: 122.10598731599748
   initial_overlap_rpy:
-    lidar_2: 86.78121977699993
-    lidar_1: 125.22454353099965
+    lidar_2: 55.79383486900042
+    lidar_1: 49.753534723000485
   reference_alignment:
-    lidar_1: 1569.0361502869991
-  calibration: 1781.1950753810006
-  total: 1903.531186522001
+    lidar_1: 215.43861160099914
+  calibration: 321.1591986679996
+  total: 443.26518598399707
 success: true

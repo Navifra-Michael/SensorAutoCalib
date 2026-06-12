@@ -531,6 +531,21 @@ class DataAssociationCollector(Node):
         self.overlap_filter_voxel = float(
             collection_cfg.get("overlap_filter_voxel", 0.0)
         )
+        stable_cfg = collection_cfg.get("stable_filter", {})
+        self.stable_filter_enabled = bool(stable_cfg.get("enabled", False))
+        self.stable_filter_voxel = float(
+            stable_cfg.get("voxel", self.overlap_filter_voxel)
+        )
+        self.stable_filter_min_observations = max(
+            1,
+            int(stable_cfg.get("min_observations", 2)),
+        )
+        self.stable_filter_min_odom_translation = float(
+            stable_cfg.get("min_odom_translation", 0.0)
+        )
+        self.stable_filter_min_odom_yaw_deg = float(
+            stable_cfg.get("min_odom_yaw_deg", 0.0)
+        )
         self.odom_lookup_mode = str(
             collection_cfg.get("odom_lookup_mode", "timestamp")
         ).strip().lower()
@@ -599,6 +614,8 @@ class DataAssociationCollector(Node):
             for entry in self.entries
         }
         self.collection_voxel_keys = {entry["name"]: set() for entry in self.entries}
+        self.stable_voxel_counts = {entry["name"]: {} for entry in self.entries}
+        self.stable_voxel_last_odom = {entry["name"]: {} for entry in self.entries}
         self.topic_types = {
             entry["name"]: entry["topic_type"]
             for entry in self.entries
@@ -607,6 +624,14 @@ class DataAssociationCollector(Node):
             self.get_logger().info(
                 "Collection overlap filter enabled: "
                 f"voxel={self.overlap_filter_voxel:.4f}m"
+            )
+        if self.stable_filter_enabled:
+            self.get_logger().info(
+                "Collection stable filter enabled: "
+                f"voxel={self.stable_filter_voxel:.4f}m, "
+                f"min_observations={self.stable_filter_min_observations}, "
+                f"min_odom_translation={self.stable_filter_min_odom_translation:.4f}m, "
+                f"min_odom_yaw={self.stable_filter_min_odom_yaw_deg:.3f}deg"
             )
         if self.mode == "6dof":
             self.get_logger().info(
@@ -711,14 +736,7 @@ class DataAssociationCollector(Node):
         if self.overlap_filter_voxel <= 0.0 or len(points) == 0:
             return points
 
-        pose = self.entry_poses[lidar_name]
-        if self.mode == "6dof":
-            keyed_points = apply_initial_pose_3d(points, pose)
-            if odom_tf is not None:
-                keyed_points = apply_transform(keyed_points, odom_tf)
-        else:
-            keyed_points = apply_initial_pose_2d(points, pose)
-
+        keyed_points = self.collection_key_points(lidar_name, points, odom_tf)
         keys = np.floor(keyed_points / self.overlap_filter_voxel).astype(np.int64)
         seen = self.collection_voxel_keys[lidar_name]
         keep_indices = []
@@ -732,6 +750,78 @@ class DataAssociationCollector(Node):
             return points[:0]
 
         return points[np.asarray(keep_indices, dtype=np.int64)]
+
+    def collection_key_points(self, lidar_name, points, odom_tf=None):
+        pose = self.entry_poses[lidar_name]
+        if self.mode == "6dof":
+            keyed_points = apply_initial_pose_3d(points, pose)
+            if odom_tf is not None:
+                keyed_points = apply_transform(keyed_points, odom_tf)
+            return keyed_points
+
+        return apply_initial_pose_2d(points, pose)
+
+    def filter_collection_stable(self, lidar_name, points, odom_tf=None):
+        if (
+            not self.stable_filter_enabled
+            or self.stable_filter_voxel <= 0.0
+            or len(points) == 0
+        ):
+            return points
+
+        keyed_points = self.collection_key_points(lidar_name, points, odom_tf)
+        keys = np.floor(keyed_points / self.stable_filter_voxel).astype(np.int64)
+        counts = self.stable_voxel_counts[lidar_name]
+        last_odom_by_key = self.stable_voxel_last_odom[lidar_name]
+        seen_in_scan = set()
+        keep_indices = []
+        for point_idx, key in enumerate(map(tuple, keys)):
+            if key not in seen_in_scan:
+                if self.should_count_stable_observation(
+                    last_odom_by_key.get(key),
+                    odom_tf,
+                ):
+                    counts[key] = counts.get(key, 0) + 1
+                    last_odom_by_key[key] = self.stable_odom_state(odom_tf)
+                seen_in_scan.add(key)
+            if counts.get(key, 0) >= self.stable_filter_min_observations:
+                keep_indices.append(point_idx)
+
+        if not keep_indices:
+            return points[:0]
+
+        return points[np.asarray(keep_indices, dtype=np.int64)]
+
+    def stable_odom_state(self, odom_tf):
+        if odom_tf is None:
+            return None
+
+        yaw = np.arctan2(odom_tf[1, 0], odom_tf[0, 0])
+        return {
+            "translation": odom_tf[:3, 3].copy(),
+            "yaw": float(yaw),
+        }
+
+    def should_count_stable_observation(self, last_state, odom_tf):
+        if last_state is None:
+            return True
+
+        current_state = self.stable_odom_state(odom_tf)
+        if current_state is None:
+            return True
+
+        delta_translation = np.linalg.norm(
+            current_state["translation"] - last_state["translation"]
+        )
+        delta_yaw = abs(np.arctan2(
+            np.sin(current_state["yaw"] - last_state["yaw"]),
+            np.cos(current_state["yaw"] - last_state["yaw"]),
+        ))
+
+        return (
+            delta_translation >= self.stable_filter_min_odom_translation
+            or delta_yaw >= np.deg2rad(self.stable_filter_min_odom_yaw_deg)
+        )
 
     def sensor_callback(self, msg, lidar_name):
         if self.finished:
@@ -747,6 +837,7 @@ class DataAssociationCollector(Node):
                 odom_tf = np.eye(4)
 
             points = message_to_xyz(msg, topic_type)
+            points = self.filter_collection_stable(lidar_name, points, odom_tf)
             points = self.filter_collection_overlap(lidar_name, points, odom_tf)
             if len(points) == 0:
                 return
@@ -758,6 +849,7 @@ class DataAssociationCollector(Node):
             return
 
         points = message_to_xy(msg, topic_type)
+        points = self.filter_collection_stable(lidar_name, points)
         points = self.filter_collection_overlap(lidar_name, points)
         if len(points) == 0:
             return
