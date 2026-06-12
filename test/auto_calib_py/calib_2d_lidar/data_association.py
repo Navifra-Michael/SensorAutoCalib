@@ -28,6 +28,7 @@ from ndt_common import (
     validate_target,
 )
 from graph_plot import (
+    AsyncPlotter,
     CollectionLivePlot,
     NdtLivePlot2D,
     NdtLivePlot3D,
@@ -544,7 +545,8 @@ class DataAssociationCollector(Node):
         )
         plot_cfg = calibration_run.calib_config.get("plot", {})
         live_enabled = bool(plot_cfg.get("show_collection_live_plot", False))
-        self.live_plot = CollectionLivePlot(
+        self.live_plot = AsyncPlotter(
+            CollectionLivePlot,
             enabled=live_enabled,
             mode=self.mode,
             title=f"Collecting {self.mode} LiDAR data",
@@ -857,7 +859,8 @@ def run_ndt_calculation(calibration_run, cloud_buffers, collection_elapsed_sec):
         if calibration_run.target["label"] == "3dof"
         else NdtLivePlot3D
     )
-    ndt_live_plot = plotter_class(
+    ndt_live_plot = AsyncPlotter(
+        plotter_class,
         enabled=live_enabled,
         title="NDT optimization",
         max_points=int(plot_cfg.get("live_max_points", 5000)),
@@ -874,6 +877,10 @@ def run_ndt_calculation(calibration_run, cloud_buffers, collection_elapsed_sec):
             best=event["best"],
             target_cloud=event["target_cloud"],
             candidate_cloud=event["candidate_cloud"],
+            best_target_cloud=event.get("best_target_cloud"),
+            best_candidate_cloud=event.get("best_candidate_cloud"),
+            current_score=event.get("current_score"),
+            force=event.get("force", False),
         )
 
     if calibration_run.target["label"] == "3dof":

@@ -5,30 +5,44 @@ lidars:
     x: -0.2
     y: -0.1
     z: 0.225
-    roll: -1.3877787807814457e-17
-    pitch: -1.3877787807814457e-17
-    yaw: 3.141589999999999
+    roll: -0.06283185307179581
+    pitch: -0.01570796326794894
+    yaw: 3.1415899999999968
     optimized: true
-    initial_overlap_score: 0.03385538615011841
+    initial_overlap_score: 0.01165351908086031
     initial_overlap_success: true
-    initial_overlap_time_sec: 166.9403582959785
+    initial_overlap_time_sec: 86.78121977699993
+    initial_overlap_pose:
+      x: -0.2
+      y: -0.1
+      z: 0.225
+      roll: -0.06283185307179581
+      pitch: -0.01570796326794894
+      yaw: 3.1415899999999968
     success: true
     score: 0.0
   lidar_1:
-    x: 0.2
-    y: 0.11
+    x: 0.21000000000000005
+    y: 0.08999999999999998
     z: 0.225
-    roll: -0.021816615649929136
-    pitch: -0.008726646259971667
-    yaw: -1.5612511283791264e-17
+    roll: -0.11693705988362008
+    pitch: -0.13962634015954634
+    yaw: 0.0017453292519943701
     optimized: true
-    initial_overlap_score: 0.08524811007400547
+    initial_overlap_score: 0.01503432414740807
     initial_overlap_success: true
-    initial_overlap_time_sec: 225.50010675599333
-    initial_score: 12.120899798698899
-    score: 11.57697226033387
-    score_improvement: 0.543927538365029
-    optimization_time_sec: 671.8275627599796
+    initial_overlap_time_sec: 125.22454353099965
+    initial_overlap_pose:
+      x: 0.2
+      y: 0.1
+      z: 0.225
+      roll: -0.09948376736367676
+      pitch: -0.08726646259971643
+      yaw: 0.0017453292519943667
+    initial_score: 16.457936203632688
+    score: 16.25645056378223
+    score_improvement: 0.20148563985045698
+    optimization_time_sec: 1569.0361502869991
     success: true
 calibration_mode: initial_overlap_rpy_then_reference_alignment
 match_mode: initial_overlap_rpy_reference_cloud
@@ -37,16 +51,17 @@ initial_overlap_score_metric: thickness
 initial_overlap_thickness_method: pca_line
 initial_overlap_score_projection: xy
 reference_score_projection: xy
+reference_project_cloud_to_xy: true
 calibration_order:
 - lidar_2
 - lidar_1
 timing_sec:
-  collection: 120.98644414002774
+  collection: 122.3361111410004
   initial_overlap_rpy:
-    lidar_2: 166.9403582959785
-    lidar_1: 225.50010675599333
+    lidar_2: 86.78121977699993
+    lidar_1: 125.22454353099965
   reference_alignment:
-    lidar_1: 671.8275627599796
-  calibration: 1064.4166931970394
-  total: 1185.4031373370672
+    lidar_1: 1569.0361502869991
+  calibration: 1781.1950753810006
+  total: 1903.531186522001
 success: true

@@ -23,8 +23,8 @@ plot:
   show_collection_live_plot: true
   show_result_plot: true
   keep_result_plot_open: true
-  live_update_interval_sec: 0.1
-  live_max_points: 5000
+  live_update_interval_sec: 0.5
+  live_max_points: -1
   keep_live_ndt_open: true
   lidar_label_font_size: 10
-  max_points: 12000
+  max_points: -1

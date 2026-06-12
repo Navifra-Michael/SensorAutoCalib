@@ -1,5 +1,7 @@
 import os
 import site
+import multiprocessing as mp
+import queue
 import time
 
 import numpy as np
@@ -42,7 +44,67 @@ import matplotlib.pyplot as plt
 from ndt_common import graph_data_path, resolve_output_path
 
 
+def run_plotter_process(plotter_class, args, kwargs, command_queue):
+    plotter = plotter_class(*args, **kwargs)
+    while True:
+        command = command_queue.get()
+        if command is None:
+            plotter.close(force=True)
+            return
+
+        command_type, command_args, command_kwargs = command
+        if command_type == "update":
+            plotter.update(*command_args, **command_kwargs)
+        elif command_type == "close":
+            plotter.close(force=bool(command_kwargs.get("force", False)))
+            return
+
+
+class AsyncPlotter:
+    def __init__(self, plotter_class, *args, **kwargs):
+        self.command_queue = mp.Queue(maxsize=1)
+        self.process = mp.Process(
+            target=run_plotter_process,
+            args=(plotter_class, args, kwargs, self.command_queue),
+            daemon=True,
+        )
+        self.process.start()
+
+    def update(self, *args, **kwargs):
+        command = ("update", args, kwargs)
+        while True:
+            try:
+                self.command_queue.put_nowait(command)
+                return
+            except queue.Full:
+                try:
+                    self.command_queue.get_nowait()
+                except queue.Empty:
+                    return
+
+    def close(self, force=False):
+        command = ("close", (), {"force": force})
+        try:
+            self.command_queue.put_nowait(command)
+        except queue.Full:
+            try:
+                self.command_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.command_queue.put_nowait(command)
+            except queue.Full:
+                pass
+        self.process.join(timeout=2.0)
+        if self.process.is_alive() and force:
+            self.process.terminate()
+            self.process.join(timeout=1.0)
+
+
 def sample_points(points, max_points):
+    if max_points is None or int(max_points) <= 0:
+        return points
+
     if len(points) <= max_points:
         return points
 
@@ -71,6 +133,75 @@ def set_axes_equal_3d(ax, cloud_sets):
     ax.set_xlim(center[0] - half_range, center[0] + half_range)
     ax.set_ylim(center[1] - half_range, center[1] + half_range)
     ax.set_zlim(center[2] - half_range, center[2] + half_range)
+
+
+def axis_limits_2d_from_points(points, min_half_range=1.0):
+    if not points:
+        return None
+
+    xy_points = np.vstack(points)[:, :2]
+    min_values = np.min(xy_points, axis=0)
+    max_values = np.max(xy_points, axis=0)
+    center = (min_values + max_values) / 2.0
+    half_range = np.max(max_values - min_values) / 2.0
+    half_range = max(half_range * 1.05, min_half_range)
+    return (
+        center[0] - half_range,
+        center[0] + half_range,
+        center[1] - half_range,
+        center[1] + half_range,
+    )
+
+
+def axis_limits_3d_from_points(points, min_half_range=1.0):
+    if not points:
+        return None
+
+    xyz_points = np.vstack(points)
+    min_values = np.min(xyz_points, axis=0)
+    max_values = np.max(xyz_points, axis=0)
+    center = (min_values + max_values) / 2.0
+    half_range = np.max(max_values - min_values) / 2.0
+    half_range = max(half_range * 1.05, min_half_range)
+    return (
+        center[0] - half_range,
+        center[0] + half_range,
+        center[1] - half_range,
+        center[1] + half_range,
+        center[2] - half_range,
+        center[2] + half_range,
+    )
+
+
+def merge_axis_limits(old_limits, new_limits):
+    if new_limits is None:
+        return old_limits
+    if old_limits is None:
+        return new_limits
+
+    return tuple(
+        min(old_limits[idx], new_limits[idx])
+        if idx % 2 == 0
+        else max(old_limits[idx], new_limits[idx])
+        for idx in range(len(old_limits))
+    )
+
+
+def apply_axis_limits_2d(ax, limits):
+    if limits is None:
+        return
+
+    ax.set_xlim(limits[0], limits[1])
+    ax.set_ylim(limits[2], limits[3])
+
+
+def apply_axis_limits_3d(ax, limits):
+    if limits is None:
+        return
+
+    ax.set_xlim(limits[0], limits[1])
+    ax.set_ylim(limits[2], limits[3])
+    ax.set_zlim(limits[4], limits[5])
 
 
 def is_interactive_backend():
@@ -217,6 +348,8 @@ class CollectionLivePlot:
         self.fig = None
         self.ax = None
         self.ax_xy = None
+        self.axis_limits_3d = None
+        self.axis_limits_2d = None
 
         if not self.enabled:
             return
@@ -313,16 +446,27 @@ class CollectionLivePlot:
             self.ax.set_xlabel("x [m]")
             self.ax.set_ylabel("y [m]")
             self.ax.set_zlabel("z [m]")
-            set_axes_equal_3d(self.ax, plotted)
+            self.axis_limits_3d = merge_axis_limits(
+                self.axis_limits_3d,
+                axis_limits_3d_from_points(plotted),
+            )
+            apply_axis_limits_3d(self.ax, self.axis_limits_3d)
         else:
+            plotted = []
             for name, points in clouds.items():
                 if len(points) == 0:
                     continue
                 self.ax.scatter(points[:, 0], points[:, 1], s=1, label=name)
+                plotted.append(points)
             self.ax.set_aspect("equal", adjustable="box")
             self.ax.set_xlabel("x [m]")
             self.ax.set_ylabel("y [m]")
             self.ax.grid(True, color="0.9", linewidth=0.4)
+            self.axis_limits_2d = merge_axis_limits(
+                self.axis_limits_2d,
+                axis_limits_2d_from_points(plotted),
+            )
+            apply_axis_limits_2d(self.ax, self.axis_limits_2d)
 
         self.ax.set_title(f"{self.title} | elapsed {elapsed_sec:.1f}s")
         self.ax.legend(loc="upper right")
@@ -341,6 +485,8 @@ class CollectionLivePlot:
         self.fig = None
         self.ax = None
         self.enabled = False
+        self.axis_limits_3d = None
+        self.axis_limits_2d = None
 
 
 class NdtLivePlot2D:
@@ -392,6 +538,9 @@ class NdtLivePlot2D:
         best,
         target_cloud,
         candidate_cloud,
+        best_target_cloud=None,
+        best_candidate_cloud=None,
+        current_score=None,
         force=False,
     ):
         if not self.enabled or self.fig is None or self.ax is None:
@@ -476,6 +625,13 @@ class NdtLivePlot3D:
         self.last_update_time = 0.0
         self.fig = None
         self.ax = None
+        self.ax_best = None
+        self.ax_xy = None
+        self.ax_best_xy = None
+        self.current_limits_3d = None
+        self.current_limits_2d = None
+        self.best_limits_3d = None
+        self.best_limits_2d = None
 
         if not self.enabled:
             return
@@ -493,12 +649,22 @@ class NdtLivePlot3D:
 
         try:
             plt.ion()
-            self.fig = plt.figure(figsize=(14, 6))
-            self.ax = self.fig.add_subplot(121, projection="3d")
-            self.ax_xy = self.fig.add_subplot(122)
+            self.fig = plt.figure(figsize=(14, 10))
+            self.ax = self.fig.add_subplot(221, projection="3d")
+            self.ax_xy = self.fig.add_subplot(222)
+            self.ax_best = self.fig.add_subplot(223, projection="3d")
+            self.ax_best_xy = self.fig.add_subplot(224)
+            self.fig.subplots_adjust(
+                left=0.06,
+                right=0.98,
+                bottom=0.06,
+                top=0.88,
+                wspace=0.18,
+                hspace=0.28,
+            )
             plt.show(block=False)
             plt.pause(0.001)
-            print("[graph_plot] 3D NDT live plot enabled with XY view")
+            print("[graph_plot] 3D NDT live plot enabled with current/best views")
         except Exception as exc:
             print(f"[graph_plot] 3D NDT live plot disabled: {exc}")
             self.close(force=True)
@@ -513,6 +679,9 @@ class NdtLivePlot3D:
         best,
         target_cloud,
         candidate_cloud,
+        best_target_cloud=None,
+        best_candidate_cloud=None,
+        current_score=None,
         force=False,
     ):
         if (
@@ -520,6 +689,8 @@ class NdtLivePlot3D:
             or self.fig is None
             or self.ax is None
             or self.ax_xy is None
+            or self.ax_best is None
+            or self.ax_best_xy is None
         ):
             return
         if not plt.fignum_exists(self.fig.number):
@@ -535,14 +706,71 @@ class NdtLivePlot3D:
             target_cloud = np.empty((0, 3))
         if candidate_cloud is None:
             candidate_cloud = np.empty((0, 3))
+        if best_target_cloud is None:
+            best_target_cloud = target_cloud
+        if best_candidate_cloud is None:
+            best_candidate_cloud = candidate_cloud
         target_cloud = sample_points(target_cloud, self.max_points)
         candidate_cloud = sample_points(candidate_cloud, self.max_points)
+        best_target_cloud = sample_points(best_target_cloud, self.max_points)
+        best_candidate_cloud = sample_points(best_candidate_cloud, self.max_points)
 
         self.ax.clear()
         self.ax_xy.clear()
+        self.ax_best.clear()
+        self.ax_best_xy.clear()
+
+        progress = case_idx / max(cases, 1) * 100.0
+        current_score_text = (
+            "n/a"
+            if current_score is None
+            else f"{float(current_score):.4f}"
+        )
+        title = (
+            f"{self.title}: {lidar_name}\n"
+            f"stage={stage_idx + 1}, {case_idx}/{cases} ({progress:.1f}%), "
+            f"current={current_score_text}, best={best['score']:.4f}"
+        )
+        self.draw_3d_and_xy_pair(
+            self.ax,
+            self.ax_xy,
+            "Current 3D view",
+            "Current XY top view",
+            target_cloud,
+            candidate_cloud,
+            lidar_name,
+            limits_attr_prefix="current",
+        )
+        self.draw_3d_and_xy_pair(
+            self.ax_best,
+            self.ax_best_xy,
+            "Best 3D view",
+            "Best XY top view",
+            best_target_cloud,
+            best_candidate_cloud,
+            lidar_name,
+            limits_attr_prefix="best",
+        )
+        self.fig.suptitle(title)
+
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+        plt.pause(0.001)
+
+    def draw_3d_and_xy_pair(
+        self,
+        ax_3d,
+        ax_xy,
+        title_3d,
+        title_xy,
+        target_cloud,
+        candidate_cloud,
+        lidar_name,
+        limits_attr_prefix,
+    ):
         plotted = []
         if len(target_cloud) > 0:
-            self.ax.scatter(
+            ax_3d.scatter(
                 target_cloud[:, 0],
                 target_cloud[:, 1],
                 target_cloud[:, 2],
@@ -550,7 +778,7 @@ class NdtLivePlot3D:
                 c="0.65",
                 label="target/fused",
             )
-            self.ax_xy.scatter(
+            ax_xy.scatter(
                 target_cloud[:, 0],
                 target_cloud[:, 1],
                 s=1,
@@ -559,7 +787,7 @@ class NdtLivePlot3D:
             )
             plotted.append(target_cloud)
         if len(candidate_cloud) > 0:
-            self.ax.scatter(
+            ax_3d.scatter(
                 candidate_cloud[:, 0],
                 candidate_cloud[:, 1],
                 candidate_cloud[:, 2],
@@ -567,7 +795,7 @@ class NdtLivePlot3D:
                 c="tab:red",
                 label=lidar_name,
             )
-            self.ax_xy.scatter(
+            ax_xy.scatter(
                 candidate_cloud[:, 0],
                 candidate_cloud[:, 1],
                 s=1,
@@ -576,39 +804,32 @@ class NdtLivePlot3D:
             )
             plotted.append(candidate_cloud)
 
-        progress = case_idx / max(cases, 1) * 100.0
-        title = (
-            f"{self.title}: {lidar_name}\n"
-            f"stage={stage_idx + 1}, {case_idx}/{cases} ({progress:.1f}%), "
-            f"score={best['score']:.4f}"
+        ax_3d.set_title(title_3d)
+        ax_3d.set_xlabel("x [m]")
+        ax_3d.set_ylabel("y [m]")
+        ax_3d.set_zlabel("z [m]")
+        ax_3d.legend(loc="upper right")
+        limits_3d_attr = f"{limits_attr_prefix}_limits_3d"
+        limits_3d = merge_axis_limits(
+            getattr(self, limits_3d_attr),
+            axis_limits_3d_from_points(plotted),
         )
-        self.ax.set_title(f"{title}\n3D")
-        self.ax.set_xlabel("x [m]")
-        self.ax.set_ylabel("y [m]")
-        self.ax.set_zlabel("z [m]")
-        self.ax.legend(loc="upper right")
-        set_axes_equal_3d(self.ax, plotted)
+        setattr(self, limits_3d_attr, limits_3d)
+        apply_axis_limits_3d(ax_3d, limits_3d)
 
-        self.ax_xy.set_title("XY top view")
-        self.ax_xy.set_xlabel("x [m]")
-        self.ax_xy.set_ylabel("y [m]")
-        self.ax_xy.set_aspect("equal", adjustable="box")
-        self.ax_xy.grid(True, color="0.9", linewidth=0.4)
-        self.ax_xy.legend(loc="upper right")
-        if plotted:
-            xy_points = np.vstack(plotted)[:, :2]
-            min_values = np.min(xy_points, axis=0)
-            max_values = np.max(xy_points, axis=0)
-            center = (min_values + max_values) / 2.0
-            half_range = np.max(max_values - min_values) / 2.0
-            half_range = max(half_range * 1.05, 1.0)
-            self.ax_xy.set_xlim(center[0] - half_range, center[0] + half_range)
-            self.ax_xy.set_ylim(center[1] - half_range, center[1] + half_range)
-
-        self.fig.tight_layout()
-        self.fig.canvas.draw_idle()
-        self.fig.canvas.flush_events()
-        plt.pause(0.001)
+        ax_xy.set_title(title_xy)
+        ax_xy.set_xlabel("x [m]")
+        ax_xy.set_ylabel("y [m]")
+        ax_xy.set_aspect("equal", adjustable="box")
+        ax_xy.grid(True, color="0.9", linewidth=0.4)
+        ax_xy.legend(loc="upper right")
+        limits_2d_attr = f"{limits_attr_prefix}_limits_2d"
+        limits_2d = merge_axis_limits(
+            getattr(self, limits_2d_attr),
+            axis_limits_2d_from_points(plotted),
+        )
+        setattr(self, limits_2d_attr, limits_2d)
+        apply_axis_limits_2d(ax_xy, limits_2d)
 
     def close(self, force=False):
         if self.keep_open and not force:
@@ -619,7 +840,13 @@ class NdtLivePlot3D:
             plt.close(self.fig)
         self.fig = None
         self.ax = None
+        self.ax_best = None
         self.ax_xy = None
+        self.ax_best_xy = None
+        self.current_limits_3d = None
+        self.current_limits_2d = None
+        self.best_limits_3d = None
+        self.best_limits_2d = None
         self.enabled = False
 
 
@@ -816,6 +1043,98 @@ def plot_clouds_projection(
     plt.legend()
     plt.title(title)
     plt.savefig(save_path, dpi=200)
+    if show_result_plot and is_interactive_backend():
+        plt.show(block=False)
+        plt.pause(0.001)
+        if not keep_result_plot_open:
+            plt.close(fig)
+    else:
+        plt.close(fig)
+
+
+def draw_clouds_projection_on_axis(
+    ax,
+    title,
+    clouds,
+    axes,
+    axis_labels,
+    axis_limits=None,
+    max_points=12000,
+    show_default_grid=True,
+):
+    for name, points in clouds.items():
+        if len(points) == 0:
+            continue
+
+        points = sample_points(points, max_points)
+        ax.scatter(points[:, axes[0]], points[:, axes[1]], s=1, label=name)
+
+    if axis_limits is not None:
+        axis_1_min, axis_1_max, axis_2_min, axis_2_max = axis_limits
+        ax.set_xlim(axis_1_min, axis_1_max)
+        ax.set_ylim(axis_2_min, axis_2_max)
+
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel(f"{axis_labels[0]} [m]")
+    ax.set_ylabel(f"{axis_labels[1]} [m]")
+    if show_default_grid:
+        ax.grid(True, color="0.9", linewidth=0.4)
+    ax.set_title(title)
+
+
+def plot_6dof_result_summary(
+    before_clouds,
+    after_clouds,
+    save_path,
+    max_points=12000,
+    show_default_grid=True,
+    show_result_plot=False,
+    keep_result_plot_open=False,
+):
+    output_dir = os.path.dirname(save_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    limits_xy = cloud_axis_limits([before_clouds, after_clouds], (0, 1))
+    limits_xz = cloud_axis_limits([before_clouds, after_clouds], (0, 2))
+    limits_yz = cloud_axis_limits([before_clouds, after_clouds], (1, 2))
+    plot_specs = [
+        ("Before - XY", before_clouds, (0, 1), ("x", "y"), limits_xy),
+        ("Before - XZ", before_clouds, (0, 2), ("x", "z"), limits_xz),
+        ("Before - YZ", before_clouds, (1, 2), ("y", "z"), limits_yz),
+        ("After - XY", after_clouds, (0, 1), ("x", "y"), limits_xy),
+        ("After - XZ", after_clouds, (0, 2), ("x", "z"), limits_xz),
+        ("After - YZ", after_clouds, (1, 2), ("y", "z"), limits_yz),
+    ]
+
+    fig, axes_grid = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True)
+    axes_flat = axes_grid.flatten()
+    legend_handles = None
+    legend_labels = None
+    for ax, (title, clouds, axes, labels, limits) in zip(axes_flat, plot_specs):
+        draw_clouds_projection_on_axis(
+            ax,
+            title,
+            clouds,
+            axes,
+            labels,
+            axis_limits=limits,
+            max_points=max_points,
+            show_default_grid=show_default_grid,
+        )
+        if legend_handles is None:
+            legend_handles, legend_labels = ax.get_legend_handles_labels()
+
+    if legend_handles:
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="upper center",
+            ncol=max(len(legend_labels), 1),
+        )
+    fig.suptitle("6DOF Calibration Result", y=1.02)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+
     if show_result_plot and is_interactive_backend():
         plt.show(block=False)
         plt.pause(0.001)
@@ -1072,17 +1391,21 @@ def expected_plot_paths(target, calib_config):
         calib_config.get("output_dir", "output"),
     )
 
+    if target["label"] == "6dof":
+        return [
+            resolve_output_path(
+                output_dir,
+                calib_config.get(
+                    "result_plot_png",
+                    calib_config.get("after_plot_png", "calibration_result.png"),
+                ),
+            )
+        ]
+
     plot_keys = [
         ("before_plot_png", "before_calibration.png"),
         ("after_plot_png", "after_calibration.png"),
     ]
-    if target["label"] == "6dof":
-        plot_keys.extend([
-            ("before_plot_xz_png", "before_calibration_xz.png"),
-            ("after_plot_xz_png", "after_calibration_xz.png"),
-            ("before_plot_yz_png", "before_calibration_yz.png"),
-            ("after_plot_yz_png", "after_calibration_yz.png"),
-        ])
 
     return [
         resolve_output_path(output_dir, calib_config.get(key, default))
@@ -1156,30 +1479,15 @@ def generate_graphs(target, lidar_config, calib_config, result_yaml):
 
     max_points = int(plot_cfg.get("max_points", 12000))
     show_default_grid = bool(plot_cfg.get("show_default_grid", True))
-    limits_xy = cloud_axis_limits([before_clouds, after_clouds], (0, 1))
-    limits_xz = cloud_axis_limits([before_clouds, after_clouds], (0, 2))
-    limits_yz = cloud_axis_limits([before_clouds, after_clouds], (1, 2))
-    plot_specs = [
-        ("Before 6DOF Calibration - XY Projection", before_clouds, outputs[0], (0, 1), ("x", "y"), limits_xy),
-        ("After 6DOF Calibration - XY Projection", after_clouds, outputs[1], (0, 1), ("x", "y"), limits_xy),
-        ("Before 6DOF Calibration - XZ Projection", before_clouds, outputs[2], (0, 2), ("x", "z"), limits_xz),
-        ("After 6DOF Calibration - XZ Projection", after_clouds, outputs[3], (0, 2), ("x", "z"), limits_xz),
-        ("Before 6DOF Calibration - YZ Projection", before_clouds, outputs[4], (1, 2), ("y", "z"), limits_yz),
-        ("After 6DOF Calibration - YZ Projection", after_clouds, outputs[5], (1, 2), ("y", "z"), limits_yz),
-    ]
-    for title, clouds, path, axes, labels, limits in plot_specs:
-        plot_clouds_projection(
-            title,
-            clouds,
-            path,
-            axes,
-            labels,
-            axis_limits=limits,
-            max_points=max_points,
-            show_default_grid=show_default_grid,
-            show_result_plot=show_result_plot,
-            keep_result_plot_open=keep_result_plot_open,
-        )
+    plot_6dof_result_summary(
+        before_clouds,
+        after_clouds,
+        outputs[0],
+        max_points=max_points,
+        show_default_grid=show_default_grid,
+        show_result_plot=show_result_plot,
+        keep_result_plot_open=keep_result_plot_open,
+    )
 
     if show_result_plot and keep_result_plot_open and is_interactive_backend():
         plt.show(block=True)

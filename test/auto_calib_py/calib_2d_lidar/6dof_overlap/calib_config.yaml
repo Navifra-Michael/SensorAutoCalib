@@ -5,6 +5,7 @@ match_mode: initial_scan_overlap_then_reference_alignment
 
 before_plot_png: before_overlap_calibration.png
 after_plot_png: after_overlap_calibration.png
+result_plot_png: overlap_calibration_result.png
 before_plot_xz_png: before_overlap_calibration_xz.png
 after_plot_xz_png: after_overlap_calibration_xz.png
 before_plot_yz_png: before_overlap_calibration_yz.png
@@ -13,7 +14,7 @@ after_plot_yz_png: after_overlap_calibration_yz.png
 ndt:
   resolution: 0.5
   min_points_per_cell: 5
-  downsample_voxel: 0.2
+  downsample_voxel: 0.05
   score_projection: xy
   self_score_projection: xy
 
@@ -22,42 +23,49 @@ initial_overlap:
   max_scans: 0
   score_metric: thickness
   thickness_method: pca_line
-  resolution: 0.5
-  min_points_per_cell: 5
+  resolution: 0.2
+  min_points_per_cell: 3
   score_projection: xy
   stages:
-    - range_roll_deg: 5.0
-      range_pitch_deg: 5.0
-      range_yaw_deg: 5.0
-      step_roll_deg: 0.5
-      step_pitch_deg: 0.5
-      step_yaw_deg: 1.0
+    - mode: axis_sequential
+      axis_order: [yaw, pitch, roll]
+      passes: 1
+      range_roll_deg: 2.5
+      range_pitch_deg: 2.5
+      range_yaw_deg: 2.5
+      step_roll_deg: 0.02
+      step_pitch_deg: 0.02
+      step_yaw_deg: 0.05
 
-    - range_roll_deg: 1.0
+    - mode: axis_sequential
+      axis_order: [yaw, pitch, roll]
+      passes: 1
+      range_roll_deg: 1.0
       range_pitch_deg: 1.0
-      range_yaw_deg: 1.0
-      step_roll_deg: 0.25
-      step_pitch_deg: 0.25
-      step_yaw_deg: 0.25
+      range_yaw_deg: 2.0
+      step_roll_deg: 0.01
+      step_pitch_deg: 0.01
+      step_yaw_deg: 0.01
 
 reference_alignment:
   score_projection: xy
+  project_cloud_to_xy: true
   stages:
-    - range_x: 0.06
-      range_y: 0.06
-      range_roll_deg: 1.0
-      range_pitch_deg: 1.0
+    - range_x: 0.03
+      range_y: 0.03
+      range_roll_deg: 3.0
+      range_pitch_deg: 3.0
       range_yaw_deg: 3.0
-      step_x: 0.02
-      step_y: 0.02
-      step_roll_deg: 0.5
-      step_pitch_deg: 0.5
-      step_yaw_deg: 1.0
+      step_x: 0.03
+      step_y: 0.03
+      step_roll_deg: 1.5
+      step_pitch_deg: 1.5
+      step_yaw_deg: 1.5
 
     - range_x: 0.02
       range_y: 0.02
-      range_roll_deg: 0.25
-      range_pitch_deg: 0.25
+      range_roll_deg: 0.5
+      range_pitch_deg: 0.5
       range_yaw_deg: 1.0
       step_x: 0.01
       step_y: 0.01
