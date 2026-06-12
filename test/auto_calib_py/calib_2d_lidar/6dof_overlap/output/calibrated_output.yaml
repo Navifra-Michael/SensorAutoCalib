@@ -1,0 +1,52 @@
+reference_lidar: lidar_2
+lidar_count: 2
+lidars:
+  lidar_2:
+    x: -0.2
+    y: -0.1
+    z: 0.225
+    roll: -1.3877787807814457e-17
+    pitch: -1.3877787807814457e-17
+    yaw: 3.141589999999999
+    optimized: true
+    initial_overlap_score: 0.03385538615011841
+    initial_overlap_success: true
+    initial_overlap_time_sec: 166.9403582959785
+    success: true
+    score: 0.0
+  lidar_1:
+    x: 0.2
+    y: 0.11
+    z: 0.225
+    roll: -0.021816615649929136
+    pitch: -0.008726646259971667
+    yaw: -1.5612511283791264e-17
+    optimized: true
+    initial_overlap_score: 0.08524811007400547
+    initial_overlap_success: true
+    initial_overlap_time_sec: 225.50010675599333
+    initial_score: 12.120899798698899
+    score: 11.57697226033387
+    score_improvement: 0.543927538365029
+    optimization_time_sec: 671.8275627599796
+    success: true
+calibration_mode: initial_overlap_rpy_then_reference_alignment
+match_mode: initial_overlap_rpy_reference_cloud
+score_projection: xy
+initial_overlap_score_metric: thickness
+initial_overlap_thickness_method: pca_line
+initial_overlap_score_projection: xy
+reference_score_projection: xy
+calibration_order:
+- lidar_2
+- lidar_1
+timing_sec:
+  collection: 120.98644414002774
+  initial_overlap_rpy:
+    lidar_2: 166.9403582959785
+    lidar_1: 225.50010675599333
+  reference_alignment:
+    lidar_1: 671.8275627599796
+  calibration: 1064.4166931970394
+  total: 1185.4031373370672
+success: true

@@ -9,12 +9,11 @@ lidars:
     z: 0.225
     pitch: 0.0
     roll: 0.0
-    yaw: 3.1276273659840443
+    yaw: 3.14159
   lidar_1:
-    x: 0.3
-    y: 0.2
+    x: 0.2
+    y: 0.1
     z: 0.225
     pitch: 0.0
     roll: 0.0
     yaw: 0.0
-

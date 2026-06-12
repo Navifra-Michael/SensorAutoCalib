@@ -1,0 +1,66 @@
+reference_lidar: lidar_2
+collect_duration_sec: 120.0
+require_odom: true
+match_mode: initial_scan_overlap_then_reference_alignment
+
+before_plot_png: before_overlap_calibration.png
+after_plot_png: after_overlap_calibration.png
+before_plot_xz_png: before_overlap_calibration_xz.png
+after_plot_xz_png: after_overlap_calibration_xz.png
+before_plot_yz_png: before_overlap_calibration_yz.png
+after_plot_yz_png: after_overlap_calibration_yz.png
+
+ndt:
+  resolution: 0.5
+  min_points_per_cell: 5
+  downsample_voxel: 0.2
+  score_projection: xy
+  self_score_projection: xy
+
+initial_overlap:
+  scan_stride: 1
+  max_scans: 0
+  score_metric: thickness
+  thickness_method: pca_line
+  resolution: 0.5
+  min_points_per_cell: 5
+  score_projection: xy
+  stages:
+    - range_roll_deg: 5.0
+      range_pitch_deg: 5.0
+      range_yaw_deg: 5.0
+      step_roll_deg: 0.5
+      step_pitch_deg: 0.5
+      step_yaw_deg: 1.0
+
+    - range_roll_deg: 1.0
+      range_pitch_deg: 1.0
+      range_yaw_deg: 1.0
+      step_roll_deg: 0.25
+      step_pitch_deg: 0.25
+      step_yaw_deg: 0.25
+
+reference_alignment:
+  score_projection: xy
+  stages:
+    - range_x: 0.06
+      range_y: 0.06
+      range_roll_deg: 1.0
+      range_pitch_deg: 1.0
+      range_yaw_deg: 3.0
+      step_x: 0.02
+      step_y: 0.02
+      step_roll_deg: 0.5
+      step_pitch_deg: 0.5
+      step_yaw_deg: 1.0
+
+    - range_x: 0.02
+      range_y: 0.02
+      range_roll_deg: 0.25
+      range_pitch_deg: 0.25
+      range_yaw_deg: 1.0
+      step_x: 0.01
+      step_y: 0.01
+      step_roll_deg: 0.25
+      step_pitch_deg: 0.25
+      step_yaw_deg: 0.25

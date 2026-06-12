@@ -1,0 +1,30 @@
+collect_duration_sec: 5.0
+output_dir: output
+output_yaml: calibrated_output.yaml
+calibrated_config_yaml: calibrated_config.yaml
+graph_data_npz: calibration_graph_data.npz
+before_plot_png: before_calibration.png
+after_plot_png: after_calibration.png
+
+collection:
+  overlap_filter_voxel: 0.01
+  odom_lookup_mode: timestamp
+  odom_interpolation: true
+  odom_max_time_diff_sec: 0.2
+  odom_buffer_sec: 10.0
+
+plot:
+  backend: TkAgg
+  show_lidar_arrows: true
+  show_robot_frame: true
+  show_ndt_grid: false
+  show_default_grid: true
+  show_live_ndt: true
+  show_collection_live_plot: true
+  show_result_plot: true
+  keep_result_plot_open: true
+  live_update_interval_sec: 0.1
+  live_max_points: 5000
+  keep_live_ndt_open: true
+  lidar_label_font_size: 10
+  max_points: 12000

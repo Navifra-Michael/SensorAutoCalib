@@ -5,31 +5,46 @@ lidars:
     x: -0.2
     y: -0.1
     z: 0.225
-    roll: 0.0
-    pitch: 0.0
-    yaw: 3.1276273659840443
-    optimized: false
-  lidar_1:
-    x: 0.30000000000000004
-    y: 0.11
-    z: 0.22499999999999998
-    roll: 0.0
-    pitch: 0.0
-    yaw: 0.0959931088596881
-    score: 8.271342198974299
-    optimization_time_sec: 1037.5079553689575
-    success: true
+    roll: -0.08290313946973063
+    pitch: -0.03490658503988659
+    yaw: 3.14159
     optimized: true
-calibration_mode: sequential_fused_ndt_2d_lidar_odom_6dof_fast_accumulated_cloud
-match_mode: fast_accumulated_cloud
+    self_roll_pitch_score: 11.35884491287013
+    self_roll_pitch_success: true
+    self_roll_pitch_time_sec: 0.4219213390024379
+    self_score_projection: xyz
+    success: true
+    score: 0.0
+  lidar_1:
+    x: 0.20000000000000004
+    y: 0.09999999999999999
+    z: 0.225
+    roll: 0.09162978572970232
+    pitch: 0.017453292519943354
+    yaw: -3.469446951953614e-18
+    optimized: true
+    self_roll_pitch_score: 11.89303908583791
+    self_roll_pitch_success: true
+    self_roll_pitch_time_sec: 0.4568954529822804
+    self_score_projection: xyz
+    initial_score: 7.584651990925974
+    score: 6.940386149681669
+    score_improvement: 0.6442658412443052
+    optimization_time_sec: 210.30393967498094
+    success: true
+calibration_mode: two_stage_self_roll_pitch_then_fused_whole_cloud
+match_mode: self_roll_pitch_plus_whole_cloud
+score_projection: xy
 calibration_order:
 - lidar_2
 - lidar_1
-odom_topic: /navi_robot_1/odom
 timing_sec:
-  collection: 3.053079925943166
+  collection: 31.002452726010233
+  self_roll_pitch:
+    lidar_2: 0.4219213390024379
+    lidar_1: 0.4568954529822804
   per_lidar_optimization:
-    lidar_1: 1037.5079553689575
-  calibration: 1038.351304159034
-  total: 1041.4043840849772
+    lidar_1: 210.30393967498094
+  calibration: 211.22133367299102
+  total: 242.22378639900126
 success: true

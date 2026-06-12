@@ -1,16 +1,19 @@
 topics:
-  lidar_1: /scan_front
-  lidar_2: /scan_rear
+  lidar_1: /merged_cloud
+  lidar_2: /lidar_obstacle_detector/cluster_cloud
+topic_types:
+  lidar_1: PointCloud
+  lidar_2: PointCloud
 lidars:
   lidar_1:
-    x: 0.367
-    y: 0.269
+    x: 0.882
+    y: 0.0
     z: 0.0
     roll: 0.0
-    yaw: 0.7854
+    yaw: 0.0
   lidar_2:
-    x: -0.368999999999999
-    y: -0.2740000000000002
+    x: 1.8499999999999983
+    y: 0.001999999999999784
     z: 0.0
     roll: 0.0
-    yaw: -2.343982695236054
+    yaw: 0.014835298641951721
