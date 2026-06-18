@@ -1379,8 +1379,9 @@ def calibrate_6dof(
     )
 
     overlap_cfg = calib_config.get("initial_overlap", {})
+    overlap_enabled = bool(overlap_cfg.get("enabled", True))
     overlap_stages = overlap_cfg.get("stages", [])
-    if not overlap_stages:
+    if overlap_enabled and not overlap_stages:
         raise ValueError("calib_config.yaml must define initial_overlap.stages.")
     overlap_score_projection = normalize_score_projection(
         overlap_cfg.get("score_projection", ndt_cfg.get("self_score_projection", "xyz"))
@@ -1403,8 +1404,9 @@ def calibrate_6dof(
     overlap_max_workers = max(1, min(overlap_max_workers, max(len(lidar_names), 1)))
 
     reference_cfg = calib_config.get("reference_alignment", {})
+    reference_enabled = bool(reference_cfg.get("enabled", True))
     reference_stages = reference_cfg.get("stages", [])
-    if not reference_stages:
+    if reference_enabled and not reference_stages:
         raise ValueError("calib_config.yaml must define reference_alignment.stages.")
     reference_score_projection = normalize_score_projection(
         reference_cfg.get("score_projection", score_projection)
@@ -1444,8 +1446,10 @@ def calibrate_6dof(
     result_yaml["initial_overlap_score_metric"] = overlap_score_metric
     result_yaml["initial_overlap_thickness_method"] = overlap_thickness_method
     result_yaml["initial_overlap_score_projection"] = overlap_score_projection
+    result_yaml["initial_overlap_enabled"] = overlap_enabled
     result_yaml["reference_score_projection"] = reference_score_projection
     result_yaml["reference_project_cloud_to_xy"] = reference_project_cloud_to_xy
+    result_yaml["reference_alignment_enabled"] = reference_enabled
     result_yaml["reference_alignment_source"] = "initial_overlap_cloud"
     result_yaml["graph_cloud_source"] = "reference_alignment_ndt_input"
     result_yaml["calibration_order"] = lidar_names
@@ -1456,7 +1460,6 @@ def calibrate_6dof(
     }
     result_yaml["success"] = True
 
-    logger.info("Stage 1: per-lidar initial scan overlap roll/pitch/yaw calibration")
     overlap_corrected_poses = copy.deepcopy(lidar_poses)
     for name in lidar_names:
         result_yaml["lidars"][name]["initial_pose"] = copy_pose(lidar_poses[name])
@@ -1493,43 +1496,66 @@ def calibrate_6dof(
             "time_sec": elapsed,
         }
 
-    stage1_jobs = [
-        (
-            name,
-            scan_chunks_by_lidar[name],
-            lidar_poses[name],
-            overlap_stages,
-            overlap_resolution,
-            overlap_min_points,
-            overlap_score_projection,
-            overlap_score_metric,
-            overlap_thickness_method,
-            overlap_stride,
-            max_overlap_scans,
-            logger,
-            progress_interval_sec,
-            progress_callback,
-        )
-        for name in lidar_names
-    ]
-    if overlap_parallel and overlap_max_workers > 1 and len(stage1_jobs) > 1:
-        logger.info(
-            "Stage 1 initial-overlap parallel enabled: "
-            f"workers={overlap_max_workers}"
-        )
-        with ThreadPoolExecutor(max_workers=overlap_max_workers) as executor:
-            futures = [
-                executor.submit(run_initial_overlap_calibration_for_lidar, *job)
-                for job in stage1_jobs
-            ]
-            stage1_outputs = [future.result() for future in as_completed(futures)]
-        for stage1_output in sorted(stage1_outputs, key=lambda item: lidar_names.index(item["name"])):
-            apply_initial_overlap_result(stage1_output)
-    else:
-        for job in stage1_jobs:
-            apply_initial_overlap_result(
-                run_initial_overlap_calibration_for_lidar(*job),
+    if overlap_enabled:
+        logger.info("Stage 1: per-lidar initial scan overlap roll/pitch/yaw calibration")
+        stage1_jobs = [
+            (
+                name,
+                scan_chunks_by_lidar[name],
+                lidar_poses[name],
+                overlap_stages,
+                overlap_resolution,
+                overlap_min_points,
+                overlap_score_projection,
+                overlap_score_metric,
+                overlap_thickness_method,
+                overlap_stride,
+                max_overlap_scans,
+                logger,
+                progress_interval_sec,
+                progress_callback,
             )
+            for name in lidar_names
+        ]
+        if overlap_parallel and overlap_max_workers > 1 and len(stage1_jobs) > 1:
+            logger.info(
+                "Stage 1 initial-overlap parallel enabled: "
+                f"workers={overlap_max_workers}"
+            )
+            with ThreadPoolExecutor(max_workers=overlap_max_workers) as executor:
+                futures = [
+                    executor.submit(run_initial_overlap_calibration_for_lidar, *job)
+                    for job in stage1_jobs
+                ]
+                stage1_outputs = [future.result() for future in as_completed(futures)]
+            for stage1_output in sorted(stage1_outputs, key=lambda item: lidar_names.index(item["name"])):
+                apply_initial_overlap_result(stage1_output)
+        else:
+            for job in stage1_jobs:
+                apply_initial_overlap_result(
+                    run_initial_overlap_calibration_for_lidar(*job),
+                )
+    else:
+        logger.info("Stage 1: initial-overlap disabled by config")
+        for name in lidar_names:
+            result_yaml["lidars"][name]["initial_overlap_score"] = None
+            result_yaml["lidars"][name]["initial_overlap_success"] = True
+            result_yaml["lidars"][name]["initial_overlap_skipped"] = True
+            result_yaml["lidars"][name]["initial_overlap_pose"] = copy_pose(
+                overlap_corrected_poses[name]
+            )
+            result_yaml["lidars"][name]["stage1_result"] = {
+                "pose": copy_pose(overlap_corrected_poses[name]),
+                "delta_from_initial": pose_delta(
+                    lidar_poses[name],
+                    overlap_corrected_poses[name],
+                ),
+                "score": None,
+                "success": True,
+                "skipped": True,
+                "time_sec": 0.0,
+            }
+            result_yaml["timing_sec"]["initial_overlap_rpy"][name] = 0.0
 
     logger.info("Stage 2 uses initial-overlap comparison clouds")
     initial_overlap_before_clouds = {
@@ -1567,111 +1593,133 @@ def calibrate_6dof(
     else:
         before_clouds = initial_overlap_before_clouds
 
-    logger.info("Stage 2: reference lidar cloud alignment")
     reference_cloud = alignment_clouds[reference_lidar]
     after_clouds = {reference_lidar: alignment_clouds[reference_lidar]}
     fused_cloud = reference_cloud
 
-    reference_pose = overlap_corrected_poses[reference_lidar]
-    result_yaml["lidars"][reference_lidar].update({
-        key: reference_pose[key]
-        for key in ("x", "y", "z", "roll", "pitch", "yaw")
-    })
-    result_yaml["lidars"][reference_lidar]["optimized"] = True
-    result_yaml["lidars"][reference_lidar]["success"] = True
-    result_yaml["lidars"][reference_lidar]["score"] = 0.0
-    result_yaml["lidars"][reference_lidar]["stage2_result"] = {
-        "pose": copy_pose(reference_pose),
-        "delta_from_stage1": pose_delta(reference_pose, reference_pose),
-        "score": 0.0,
-        "success": True,
-        "fixed_as_reference": True,
-    }
-    result_yaml["lidars"][reference_lidar]["final_pose"] = copy_pose(reference_pose)
-
-    for lidar in lidars:
-        name = lidar["name"]
-        if name == reference_lidar:
-            continue
-
-        if len(alignment_clouds[name]) == 0:
-            result_yaml["lidars"][name]["success"] = False
-            result_yaml["lidars"][name]["reason"] = "no_overlap_cloud"
-            continue
-
-        target_ndt = build_ndt_grid(
-            fused_cloud,
-            resolution,
-            min_points,
-            reference_score_projection,
-        )
-        if len(target_ndt) == 0:
-            result_yaml["success"] = False
-            result_yaml["lidars"][name]["success"] = False
-            result_yaml["lidars"][name]["reason"] = "empty_reference_ndt_grid"
-            continue
-
-        init_pose = overlap_corrected_poses[name]
-        initial_score = float(ndt_score(
-            alignment_clouds[name],
-            target_ndt,
-            resolution,
-            reference_score_projection,
-        ))
-        start_time = time.perf_counter()
-        result = optimize_against_reference_cloud(
-            name,
-            alignment_clouds[name],
-            fused_cloud,
-            target_ndt,
-            init_pose,
-            reference_stages,
-            resolution,
-            reference_score_projection,
-            logger,
-            progress_interval_sec,
-            progress_callback=progress_callback,
-        )
-        elapsed = time.perf_counter() - start_time
-        result_yaml["timing_sec"]["reference_alignment"][name] = elapsed
-
-        result_yaml["lidars"][name].update({
-            key: result[key]
+    if reference_enabled:
+        logger.info("Stage 2: reference lidar cloud alignment")
+        reference_pose = overlap_corrected_poses[reference_lidar]
+        result_yaml["lidars"][reference_lidar].update({
+            key: reference_pose[key]
             for key in ("x", "y", "z", "roll", "pitch", "yaw")
         })
-        result_yaml["lidars"][name]["initial_score"] = initial_score
-        result_yaml["lidars"][name]["score"] = float(result["score"])
-        result_yaml["lidars"][name]["score_improvement"] = float(
-            initial_score - result["score"]
-        )
-        result_yaml["lidars"][name]["optimization_time_sec"] = elapsed
-        result_yaml["lidars"][name]["success"] = result["success"]
-        result_yaml["lidars"][name]["optimized"] = True
-        result_yaml["lidars"][name]["stage2_result"] = {
-            "pose": {
+        result_yaml["lidars"][reference_lidar]["optimized"] = True
+        result_yaml["lidars"][reference_lidar]["success"] = True
+        result_yaml["lidars"][reference_lidar]["score"] = 0.0
+        result_yaml["lidars"][reference_lidar]["stage2_result"] = {
+            "pose": copy_pose(reference_pose),
+            "delta_from_stage1": pose_delta(reference_pose, reference_pose),
+            "score": 0.0,
+            "success": True,
+            "fixed_as_reference": True,
+        }
+        result_yaml["lidars"][reference_lidar]["final_pose"] = copy_pose(reference_pose)
+
+        for lidar in lidars:
+            name = lidar["name"]
+            if name == reference_lidar:
+                continue
+
+            if len(alignment_clouds[name]) == 0:
+                result_yaml["lidars"][name]["success"] = False
+                result_yaml["lidars"][name]["reason"] = "no_overlap_cloud"
+                continue
+
+            target_ndt = build_ndt_grid(
+                fused_cloud,
+                resolution,
+                min_points,
+                reference_score_projection,
+            )
+            if len(target_ndt) == 0:
+                result_yaml["success"] = False
+                result_yaml["lidars"][name]["success"] = False
+                result_yaml["lidars"][name]["reason"] = "empty_reference_ndt_grid"
+                continue
+
+            init_pose = overlap_corrected_poses[name]
+            initial_score = float(ndt_score(
+                alignment_clouds[name],
+                target_ndt,
+                resolution,
+                reference_score_projection,
+            ))
+            start_time = time.perf_counter()
+            result = optimize_against_reference_cloud(
+                name,
+                alignment_clouds[name],
+                fused_cloud,
+                target_ndt,
+                init_pose,
+                reference_stages,
+                resolution,
+                reference_score_projection,
+                logger,
+                progress_interval_sec,
+                progress_callback=progress_callback,
+            )
+            elapsed = time.perf_counter() - start_time
+            result_yaml["timing_sec"]["reference_alignment"][name] = elapsed
+
+            result_yaml["lidars"][name].update({
+                key: result[key]
+                for key in ("x", "y", "z", "roll", "pitch", "yaw")
+            })
+            result_yaml["lidars"][name]["initial_score"] = initial_score
+            result_yaml["lidars"][name]["score"] = float(result["score"])
+            result_yaml["lidars"][name]["score_improvement"] = float(
+                initial_score - result["score"]
+            )
+            result_yaml["lidars"][name]["optimization_time_sec"] = elapsed
+            result_yaml["lidars"][name]["success"] = result["success"]
+            result_yaml["lidars"][name]["optimized"] = True
+            result_yaml["lidars"][name]["stage2_result"] = {
+                "pose": {
+                    key: float(result[key])
+                    for key in ("x", "y", "z", "roll", "pitch", "yaw")
+                },
+                "delta_from_stage1": pose_delta(init_pose, result),
+                "initial_score": initial_score,
+                "score": float(result["score"]),
+                "score_improvement": float(initial_score - result["score"]),
+                "success": bool(result["success"]),
+                "time_sec": elapsed,
+            }
+            result_yaml["lidars"][name]["final_pose"] = {
                 key: float(result[key])
                 for key in ("x", "y", "z", "roll", "pitch", "yaw")
-            },
-            "delta_from_stage1": pose_delta(init_pose, result),
-            "initial_score": initial_score,
-            "score": float(result["score"]),
-            "score_improvement": float(initial_score - result["score"]),
-            "success": bool(result["success"]),
-            "time_sec": elapsed,
-        }
-        result_yaml["lidars"][name]["final_pose"] = {
-            key: float(result[key])
-            for key in ("x", "y", "z", "roll", "pitch", "yaw")
-        }
+            }
 
-        aligned_cloud = transform_accumulated_cloud(
-            alignment_clouds[name],
-            init_pose,
-            result,
-        )
-        after_clouds[name] = aligned_cloud
-        fused_cloud = np.vstack([fused_cloud, aligned_cloud])
-        fused_cloud = downsample_xyz(fused_cloud, downsample_voxel)
+            aligned_cloud = transform_accumulated_cloud(
+                alignment_clouds[name],
+                init_pose,
+                result,
+            )
+            after_clouds[name] = aligned_cloud
+            fused_cloud = np.vstack([fused_cloud, aligned_cloud])
+            fused_cloud = downsample_xyz(fused_cloud, downsample_voxel)
+    else:
+        logger.info("Stage 2: reference alignment disabled by config")
+        after_clouds = alignment_clouds
+        for name in lidar_names:
+            pose = overlap_corrected_poses[name]
+            result_yaml["lidars"][name].update({
+                key: pose[key]
+                for key in ("x", "y", "z", "roll", "pitch", "yaw")
+            })
+            result_yaml["lidars"][name]["success"] = True
+            result_yaml["lidars"][name]["optimized"] = False
+            result_yaml["lidars"][name]["stage2_result"] = {
+                "pose": copy_pose(pose),
+                "delta_from_stage1": pose_delta(pose, pose),
+                "score": None,
+                "success": True,
+                "skipped": True,
+                "time_sec": 0.0,
+            }
+            result_yaml["lidars"][name]["final_pose"] = copy_pose(pose)
+            result_yaml["timing_sec"]["reference_alignment"][name] = 0.0
 
     finish_time = time.perf_counter()
     for name in lidar_names:

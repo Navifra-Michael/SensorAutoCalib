@@ -532,6 +532,18 @@ class DataAssociationCollector(Node):
         self.overlap_filter_voxel = float(
             collection_cfg.get("overlap_filter_voxel", 0.0)
         )
+        self.sample_mode = str(
+            collection_cfg.get("sample_mode", "all")
+        ).strip().lower()
+        self.sample_interval_sec = float(
+            collection_cfg.get("sample_interval_sec", 0.0)
+        )
+        if self.sample_mode not in ("all", "time_interval"):
+            raise ValueError(
+                "collection.sample_mode must be one of: all, time_interval"
+            )
+        if self.sample_interval_sec <= 0.0:
+            self.sample_mode = "all"
         stable_cfg = collection_cfg.get("stable_filter", {})
         self.stable_filter_enabled = bool(stable_cfg.get("enabled", False))
         self.stable_filter_voxel = float(
@@ -617,10 +629,18 @@ class DataAssociationCollector(Node):
         self.collection_voxel_keys = {entry["name"]: set() for entry in self.entries}
         self.stable_voxel_counts = {entry["name"]: {} for entry in self.entries}
         self.stable_voxel_last_odom = {entry["name"]: {} for entry in self.entries}
+        self.last_sample_time_by_lidar = {
+            entry["name"]: None for entry in self.entries
+        }
         self.topic_types = {
             entry["name"]: entry["topic_type"]
             for entry in self.entries
         }
+        if self.sample_mode == "time_interval":
+            self.get_logger().info(
+                "Collection sample mode: time_interval "
+                f"interval={self.sample_interval_sec:.3f}s"
+            )
         if self.overlap_filter_voxel > 0.0:
             self.get_logger().info(
                 "Collection overlap filter enabled: "
@@ -824,8 +844,34 @@ class DataAssociationCollector(Node):
             or delta_yaw >= np.deg2rad(self.stable_filter_min_odom_yaw_deg)
         )
 
+    def sample_time_sec(self, msg):
+        stamp = message_stamp_sec(msg)
+        if stamp is not None:
+            return stamp
+        return self.collection_elapsed_sec
+
+    def should_sample_scan(self, lidar_name, msg):
+        if self.sample_mode != "time_interval":
+            return True
+
+        current_time = self.sample_time_sec(msg)
+        last_time = self.last_sample_time_by_lidar[lidar_name]
+        if (
+            last_time is not None
+            and current_time - last_time < self.sample_interval_sec
+        ):
+            return False
+
+        return True
+
+    def mark_sampled_scan(self, lidar_name, msg):
+        if self.sample_mode == "time_interval":
+            self.last_sample_time_by_lidar[lidar_name] = self.sample_time_sec(msg)
+
     def sensor_callback(self, msg, lidar_name):
         if self.finished:
+            return
+        if not self.should_sample_scan(lidar_name, msg):
             return
         topic_type = self.topic_types[lidar_name]
 
@@ -847,6 +893,7 @@ class DataAssociationCollector(Node):
                 "points": points,
                 "odom_tf": odom_tf,
             })
+            self.mark_sampled_scan(lidar_name, msg)
             return
 
         points = message_to_xy(msg, topic_type)
@@ -856,6 +903,7 @@ class DataAssociationCollector(Node):
             return
 
         self.cloud_buffers[lidar_name].append(points)
+        self.mark_sampled_scan(lidar_name, msg)
 
     def timer_callback(self):
         if self.finished:
