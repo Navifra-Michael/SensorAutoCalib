@@ -1,6 +1,7 @@
 import os
 import importlib.util
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from bisect import bisect_left
@@ -878,7 +879,7 @@ class DataAssociationCollector(Node):
             trajectory=self.odom_trajectory,
             force=True,
         )
-        self.live_plot.close()
+        self.live_plot.close(force=True)
 
 
 class PrintLogger:
@@ -901,6 +902,10 @@ def collect_topic_data(calibration_run):
             rclpy.spin_once(node, timeout_sec=0.1)
         return node.cloud_buffers, node.collection_elapsed_sec
     finally:
+        try:
+            node.live_plot.close(force=True)
+        except Exception:
+            pass
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
@@ -959,9 +964,50 @@ def run_ndt_calculation(calibration_run, cloud_buffers, collection_elapsed_sec):
         update_interval_sec=float(plot_cfg.get("live_update_interval_sec", 0.5)),
         keep_open=bool(plot_cfg.get("keep_live_ndt_open", False)),
     )
+    separate_initial_plots = bool(
+        plot_cfg.get("separate_initial_overlap_plots", False)
+    )
+    initial_plotters = {}
+    initial_plotters_lock = threading.Lock()
+    if separate_initial_plots and live_enabled:
+        for plot_key in calibration_run.lidar_config.get("lidars", {}).keys():
+            initial_plotters[plot_key] = AsyncPlotter(
+                plotter_class,
+                enabled=live_enabled,
+                title=f"Initial overlap: {plot_key}",
+                max_points=int(plot_cfg.get("live_max_points", 5000)),
+                update_interval_sec=float(
+                    plot_cfg.get("live_update_interval_sec", 0.5)
+                ),
+                keep_open=bool(plot_cfg.get("keep_live_ndt_open", False)),
+            )
+
+    def get_initial_plotter(plot_key):
+        with initial_plotters_lock:
+            if plot_key not in initial_plotters:
+                initial_plotters[plot_key] = AsyncPlotter(
+                    plotter_class,
+                    enabled=live_enabled,
+                    title=f"Initial overlap: {plot_key}",
+                    max_points=int(plot_cfg.get("live_max_points", 5000)),
+                    update_interval_sec=float(
+                        plot_cfg.get("live_update_interval_sec", 0.5)
+                    ),
+                    keep_open=bool(plot_cfg.get("keep_live_ndt_open", False)),
+                )
+            return initial_plotters[plot_key]
 
     def progress_callback(event):
-        ndt_live_plot.update(
+        target_plotter = ndt_live_plot
+        if (
+            separate_initial_plots
+            and event.get("plot_group") == "initial_overlap"
+        ):
+            target_plotter = get_initial_plotter(
+                event.get("plot_key", event["lidar_name"]),
+            )
+
+        target_plotter.update(
             lidar_name=event["lidar_name"],
             stage_idx=event["stage_idx"],
             case_idx=event["case_idx"],
@@ -972,6 +1018,8 @@ def run_ndt_calculation(calibration_run, cloud_buffers, collection_elapsed_sec):
             best_target_cloud=event.get("best_target_cloud"),
             best_candidate_cloud=event.get("best_candidate_cloud"),
             current_score=event.get("current_score"),
+            current_vector=event.get("current_vector"),
+            best_vector=event.get("best_vector"),
             force=event.get("force", False),
         )
 
@@ -987,6 +1035,8 @@ def run_ndt_calculation(calibration_run, cloud_buffers, collection_elapsed_sec):
             )
         finally:
             ndt_live_plot.close()
+            for plotter in initial_plotters.values():
+                plotter.close(force=True)
 
     try:
         return module.calibrate_6dof(
@@ -999,6 +1049,8 @@ def run_ndt_calculation(calibration_run, cloud_buffers, collection_elapsed_sec):
         )
     finally:
         ndt_live_plot.close(force=True)
+        for plotter in initial_plotters.values():
+            plotter.close(force=True)
 
 
 def save_calibration_output(calibration_run, calibration_output):
@@ -1016,6 +1068,7 @@ def save_calibration_output(calibration_run, calibration_output):
         calibration_output["before_clouds"],
         calibration_output["after_clouds"],
         calibration_output["point_dim"],
+        extra_graph_clouds=calibration_output.get("extra_graph_clouds"),
     )
     print(f"[data_association] saved result: {calibration_run.paths['output_yaml']}")
     print(

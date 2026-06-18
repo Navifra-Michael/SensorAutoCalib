@@ -2,14 +2,17 @@ reference_lidar: lidar_2
 collect_duration_sec: 120.0
 require_odom: true
 match_mode: initial_scan_overlap_then_reference_alignment
+feedback_calib_count: 0
 
-before_plot_png: before_overlap_calibration.png
-after_plot_png: after_overlap_calibration.png
 result_plot_png: overlap_calibration_result.png
-before_plot_xz_png: before_overlap_calibration_xz.png
-after_plot_xz_png: after_overlap_calibration_xz.png
-before_plot_yz_png: before_overlap_calibration_yz.png
-after_plot_yz_png: after_overlap_calibration_yz.png
+before_plot_png: before_calib.png
+after_plot_png: after_calib.png
+
+plot:
+  show_result_plot: false
+  keep_result_plot_open: false
+  keep_live_ndt_open: false
+  separate_initial_overlap_plots: true
 
 ndt:
   resolution: 0.5
@@ -19,56 +22,77 @@ ndt:
   self_score_projection: xy
 
 initial_overlap:
+  parallel: true
+  max_workers: 2
   scan_stride: 1
   max_scans: 0
   score_metric: thickness
   thickness_method: pca_line
-  resolution: 0.2
+  resolution: 0.1
   min_points_per_cell: 3
   score_projection: xy
   stages:
     - mode: axis_sequential
-      axis_order: [yaw, pitch, roll]
-      passes: 1
+      axis_order: [yaw, roll, pitch]
+      passes: 2
       range_roll_deg: 2.5
       range_pitch_deg: 2.5
       range_yaw_deg: 2.5
-      step_roll_deg: 0.02
-      step_pitch_deg: 0.02
+      step_roll_deg: 0.05
+      step_pitch_deg: 0.05
       step_yaw_deg: 0.05
 
     - mode: axis_sequential
-      axis_order: [yaw, pitch, roll]
-      passes: 1
+      axis_order: [yaw, roll, pitch]
+      passes: 2
       range_roll_deg: 1.0
       range_pitch_deg: 1.0
-      range_yaw_deg: 2.0
+      range_yaw_deg: 1.0
       step_roll_deg: 0.01
       step_pitch_deg: 0.01
       step_yaw_deg: 0.01
+
+
+    # - mode: tilt_yaw_vector
+    #   tilt_frame: local
+    #   tilt_direction_min_deg: 0.0
+    #   tilt_direction_max_deg: 360.0
+    #   tilt_direction_step_deg: 0.1
+    #   min_tilt_deg: 0.0
+    #   max_tilt_deg: 1.0
+    #   step_tilt_deg: 0.2
+      # Add these two keys when yaw should also be searched in this stage.
+      # range_yaw_deg: 1.0
+      # step_yaw_deg: 0.1
 
 reference_alignment:
   score_projection: xy
   project_cloud_to_xy: true
   stages:
-    - range_x: 0.03
+    - axes: [x, y, yaw]
+      range_x: 0.03
       range_y: 0.03
-      range_roll_deg: 3.0
-      range_pitch_deg: 3.0
       range_yaw_deg: 3.0
-      step_x: 0.03
-      step_y: 0.03
-      step_roll_deg: 1.5
-      step_pitch_deg: 1.5
-      step_yaw_deg: 1.5
+      step_x: 0.005
+      step_y: 0.005
+      step_yaw_deg: 0.5
 
-    - range_x: 0.02
-      range_y: 0.02
-      range_roll_deg: 0.5
-      range_pitch_deg: 0.5
+    - axes: [x, y, yaw]
+      range_x: 0.01
+      range_y: 0.01
       range_yaw_deg: 1.0
-      step_x: 0.01
-      step_y: 0.01
-      step_roll_deg: 0.25
-      step_pitch_deg: 0.25
-      step_yaw_deg: 0.25
+      step_x: 0.002
+      step_y: 0.002
+      step_yaw_deg: 0.1
+
+    # - axes: [roll, pitch]
+    #   range_roll_deg: 2.5
+    #   range_pitch_deg: 2.5
+    #   step_roll_deg: 0.1
+    #   step_pitch_deg: 0.1
+
+    # - axes: [roll, pitch]
+    #   range_roll_deg: 1.0
+    #   range_pitch_deg: 1.0
+    #   step_roll_deg: 0.05
+    #   step_pitch_deg: 0.05

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib.util
 import os
 import time
@@ -30,6 +31,7 @@ normalize_angle = _BASE.normalize_angle
 normalize_score_projection = _BASE.normalize_score_projection
 optional_stage_values = _BASE.optional_stage_values
 pose_to_transform = _BASE.pose_to_transform
+rotation_matrix = _BASE.rotation_matrix
 stage_values = _BASE.stage_values
 transform_accumulated_cloud = _BASE.transform_accumulated_cloud
 transform_scan_chunks = _BASE.transform_scan_chunks
@@ -39,6 +41,124 @@ def copy_pose(pose):
     return {
         key: float(pose[key])
         for key in ("x", "y", "z", "roll", "pitch", "yaw")
+    }
+
+
+def pose_delta(from_pose, to_pose):
+    return {
+        "x": float(to_pose["x"]) - float(from_pose["x"]),
+        "y": float(to_pose["y"]) - float(from_pose["y"]),
+        "z": float(to_pose["z"]) - float(from_pose["z"]),
+        "roll": float(normalize_angle(
+            float(to_pose["roll"]) - float(from_pose["roll"])
+        )),
+        "pitch": float(normalize_angle(
+            float(to_pose["pitch"]) - float(from_pose["pitch"])
+        )),
+        "yaw": float(normalize_angle(
+            float(to_pose["yaw"]) - float(from_pose["yaw"])
+        )),
+    }
+
+
+def organize_lidar_result(raw_result):
+    final_pose = raw_result.get("final_pose")
+    if final_pose is None:
+        final_pose = {
+            key: float(raw_result[key])
+            for key in ("x", "y", "z", "roll", "pitch", "yaw")
+            if key in raw_result
+        }
+
+    initial_pose = raw_result.get("initial_pose")
+    stage1_result = raw_result.get("stage1_result", {})
+    stage2_result = raw_result.get("stage2_result", {})
+    stage1_pose = stage1_result.get(
+        "pose",
+        raw_result.get("initial_overlap_pose", final_pose),
+    )
+    stage2_pose = stage2_result.get("pose", final_pose)
+
+    organized = {
+        key: float(final_pose[key])
+        for key in ("x", "y", "z", "roll", "pitch", "yaw")
+        if key in final_pose
+    }
+    organized["poses"] = {
+        "initial": initial_pose,
+        "stage1": stage1_pose,
+        "stage2": stage2_pose,
+        "final": final_pose,
+    }
+    organized["deltas"] = {
+        "stage1_from_initial": stage1_result.get("delta_from_initial"),
+        "stage2_from_stage1": stage2_result.get("delta_from_stage1"),
+        "final_from_initial": (
+            pose_delta(initial_pose, final_pose)
+            if initial_pose and final_pose else None
+        ),
+    }
+    organized["scores"] = {
+        "stage1": stage1_result.get("score"),
+        "stage2_initial": stage2_result.get("initial_score"),
+        "stage2_final": stage2_result.get("score"),
+        "stage2_improvement": stage2_result.get("score_improvement"),
+    }
+    organized["timing"] = {
+        "stage1_sec": stage1_result.get("time_sec"),
+        "stage2_sec": stage2_result.get(
+            "time_sec",
+            raw_result.get("optimization_time_sec"),
+        ),
+    }
+    organized["status"] = {
+        "optimized": bool(raw_result.get("optimized", False)),
+        "success": bool(raw_result.get("success", False)),
+        "stage1_success": bool(stage1_result.get(
+            "success",
+            raw_result.get("initial_overlap_success", False),
+        )),
+        "stage2_success": bool(stage2_result.get(
+            "success",
+            raw_result.get("success", False),
+        )),
+    }
+    if "reason" in raw_result:
+        organized["status"]["reason"] = raw_result["reason"]
+    if stage2_result.get("fixed_as_reference"):
+        organized["status"]["fixed_as_reference"] = True
+
+    return organized
+
+
+def config_with_feedback_poses(lidar_config, result_yaml):
+    updated_config = copy.deepcopy(lidar_config)
+    for name, result_pose in result_yaml.get("lidars", {}).items():
+        if name not in updated_config.get("lidars", {}):
+            continue
+
+        final_pose = result_pose.get("poses", {}).get("final", result_pose)
+        for key in ("x", "y", "z", "roll", "pitch", "yaw"):
+            if key in final_pose:
+                updated_config["lidars"][name][key] = float(final_pose[key])
+
+    return updated_config
+
+
+def feedback_iteration_summary(iteration_idx, result_yaml):
+    return {
+        "iteration": int(iteration_idx),
+        "success": bool(result_yaml.get("success", False)),
+        "lidars": {
+            name: {
+                "final_pose": copy_pose(
+                    lidar_result.get("poses", {}).get("final", lidar_result),
+                ),
+                "scores": copy.deepcopy(lidar_result.get("scores", {})),
+                "status": copy.deepcopy(lidar_result.get("status", {})),
+            }
+            for name, lidar_result in result_yaml.get("lidars", {}).items()
+        },
     }
 
 
@@ -56,6 +176,36 @@ def optional_angle_stage_values(center, stage, range_key, step_key):
         np.deg2rad(float(stage[range_key])),
         np.deg2rad(float(stage[step_key])),
     )
+
+
+def stage_axis_set(stage, default_axes):
+    axes = stage.get("axes", stage.get("axis_order", default_axes))
+    if isinstance(axes, str):
+        axes = [axis.strip() for axis in axes.split(",") if axis.strip()]
+    return {str(axis).strip().lower() for axis in axes}
+
+
+def fixed_stage_values(center):
+    return np.array([center], dtype=np.float64)
+
+
+def selective_stage_values(center, stage, axis_name, range_key, step_key, active_axes):
+    if axis_name not in active_axes:
+        return fixed_stage_values(center)
+    return optional_stage_values(center, stage, range_key, step_key)
+
+
+def selective_angle_stage_values(
+    center,
+    stage,
+    axis_name,
+    range_key,
+    step_key,
+    active_axes,
+):
+    if axis_name not in active_axes:
+        return fixed_stage_values(center)
+    return optional_angle_stage_values(center, stage, range_key, step_key)
 
 
 def invert_transform(transform):
@@ -245,6 +395,168 @@ def pose_with_rpy(base_pose, roll, pitch, yaw):
     return pose
 
 
+def euler_from_rotation_matrix(rot):
+    sy = -float(rot[2, 0])
+    sy = min(1.0, max(-1.0, sy))
+    pitch = np.arcsin(sy)
+    cp = np.cos(pitch)
+
+    if abs(cp) > 1e-9:
+        roll = np.arctan2(rot[2, 1], rot[2, 2])
+        yaw = np.arctan2(rot[1, 0], rot[0, 0])
+    else:
+        roll = 0.0
+        yaw = np.arctan2(-rot[0, 1], rot[1, 1])
+
+    return (
+        float(normalize_angle(roll)),
+        float(normalize_angle(pitch)),
+        float(normalize_angle(yaw)),
+    )
+
+
+def axis_angle_rotation_matrix(axis, angle):
+    axis = np.asarray(axis, dtype=np.float64)
+    norm = np.linalg.norm(axis)
+    if norm < 1e-12 or abs(angle) < 1e-12:
+        return np.eye(3)
+
+    x, y, z = axis / norm
+    c = np.cos(angle)
+    s = np.sin(angle)
+    one_c = 1.0 - c
+    return np.array([
+        [c + x * x * one_c, x * y * one_c - z * s, x * z * one_c + y * s],
+        [y * x * one_c + z * s, c + y * y * one_c, y * z * one_c - x * s],
+        [z * x * one_c - y * s, z * y * one_c + x * s, c + z * z * one_c],
+    ])
+
+
+def tilt_rotation_matrix(direction, tilt):
+    tilt_direction = np.array([
+        np.cos(direction),
+        np.sin(direction),
+        0.0,
+    ])
+    z_axis = np.array([0.0, 0.0, 1.0])
+    tilt_axis = np.cross(z_axis, tilt_direction)
+    return axis_angle_rotation_matrix(tilt_axis, tilt)
+
+
+def pose_with_tilt_yaw_delta(
+    base_pose,
+    tilt_direction,
+    tilt,
+    yaw_delta,
+    tilt_frame="local",
+):
+    base_rot = rotation_matrix(
+        float(base_pose["roll"]),
+        float(base_pose["pitch"]),
+        float(base_pose["yaw"]),
+    )
+    delta_rot = (
+        rotation_matrix(0.0, 0.0, yaw_delta)
+        @ tilt_rotation_matrix(tilt_direction, tilt)
+    )
+    tilt_frame = str(tilt_frame).strip().lower()
+    if tilt_frame in ("local", "lidar", "current"):
+        final_rot = base_rot @ delta_rot
+    elif tilt_frame in ("global", "base", "robot"):
+        final_rot = delta_rot @ base_rot
+    else:
+        raise ValueError("tilt_frame must be one of: local, global")
+
+    roll, pitch, yaw = euler_from_rotation_matrix(final_rot)
+    return pose_with_rpy(base_pose, roll, pitch, yaw)
+
+
+def pose_plane_normal(pose):
+    rot = rotation_matrix(
+        float(pose["roll"]),
+        float(pose["pitch"]),
+        float(pose["yaw"]),
+    )
+    return rot @ np.array([0.0, 0.0, 1.0])
+
+
+def tilt_vector_plot_info(pose, stage_mode=None, tilt_direction=None, tilt=None):
+    info = {
+        "normal": pose_plane_normal(pose).astype(float).tolist(),
+    }
+    if stage_mode is not None:
+        info["stage_mode"] = stage_mode
+    if tilt_direction is not None:
+        info["tilt_direction_deg"] = float(np.rad2deg(tilt_direction))
+    if tilt is not None:
+        info["tilt_deg"] = float(np.rad2deg(tilt))
+    return info
+
+
+def tilt_magnitude_values(stage):
+    max_key = "max_tilt_deg"
+    if max_key not in stage:
+        max_key = "range_tilt_deg"
+    if max_key not in stage or "step_tilt_deg" not in stage:
+        raise ValueError(
+            "tilt_yaw_vector stage must define max_tilt_deg "
+            "(or range_tilt_deg) and step_tilt_deg."
+        )
+
+    min_tilt = np.deg2rad(float(stage.get("min_tilt_deg", 0.0)))
+    max_tilt = np.deg2rad(float(stage[max_key]))
+    step = np.deg2rad(float(stage["step_tilt_deg"]))
+    if step <= 0.0:
+        raise ValueError("step_tilt_deg must be greater than 0.")
+    if max_tilt < min_tilt:
+        raise ValueError("max_tilt_deg must be greater than or equal to min_tilt_deg.")
+
+    count = int(np.floor((max_tilt - min_tilt) / step + 1e-9)) + 1
+    return min_tilt + np.arange(count, dtype=np.float64) * step
+
+
+def tilt_direction_values(stage):
+    for key in (
+        "tilt_direction_min_deg",
+        "tilt_direction_max_deg",
+        "tilt_direction_step_deg",
+    ):
+        if key not in stage:
+            raise ValueError(
+                "tilt_yaw_vector stage must define tilt_direction_min_deg, "
+                "tilt_direction_max_deg, and tilt_direction_step_deg."
+            )
+
+    min_direction = np.deg2rad(float(stage["tilt_direction_min_deg"]))
+    max_direction = np.deg2rad(float(stage["tilt_direction_max_deg"]))
+    step = np.deg2rad(float(stage["tilt_direction_step_deg"]))
+    if step <= 0.0:
+        raise ValueError("tilt_direction_step_deg must be greater than 0.")
+    if max_direction < min_direction:
+        raise ValueError(
+            "tilt_direction_max_deg must be greater than or equal to "
+            "tilt_direction_min_deg."
+        )
+
+    count = int(np.floor((max_direction - min_direction) / step + 1e-9)) + 1
+    return min_direction + np.arange(count, dtype=np.float64) * step
+
+
+def yaw_delta_values(stage):
+    if "range_yaw_deg" not in stage and "step_yaw_deg" not in stage:
+        return np.array([0.0], dtype=np.float64)
+    if "range_yaw_deg" not in stage or "step_yaw_deg" not in stage:
+        raise ValueError(
+            "tilt_yaw_vector stage must define both range_yaw_deg and "
+            "step_yaw_deg, or neither to keep yaw fixed."
+        )
+    return stage_values(
+        0.0,
+        np.deg2rad(float(stage["range_yaw_deg"])),
+        np.deg2rad(float(stage["step_yaw_deg"])),
+    )
+
+
 def project_cloud_to_xy_plane(points):
     if len(points) == 0:
         return points
@@ -320,6 +632,8 @@ def maybe_report_initial_overlap_progress(
     best,
     score_projection,
     current_score=None,
+    current_vector=None,
+    best_vector=None,
     force=False,
 ):
     if progress_callback is None:
@@ -337,6 +651,8 @@ def maybe_report_initial_overlap_progress(
     best_clouds = initial_scan_overlap_clouds(chunks, best, indices)
     progress_callback({
         "lidar_name": f"{lidar_name} initial-overlap",
+        "plot_group": "initial_overlap",
+        "plot_key": lidar_name,
         "stage_idx": stage_idx,
         "case_idx": case_idx,
         "cases": cases,
@@ -347,6 +663,8 @@ def maybe_report_initial_overlap_progress(
         "best_target_cloud": best_clouds["target"],
         "best_candidate_cloud": best_clouds["source"],
         "score_projection": score_projection,
+        "current_vector": current_vector,
+        "best_vector": best_vector,
         "force": force,
     })
 
@@ -560,6 +878,99 @@ def optimize_initial_overlap_axis_sequential_stage(
             current.update(axis_best_pose)
 
 
+def optimize_initial_overlap_tilt_yaw_vector_stage(
+    lidar_name,
+    chunks,
+    indices,
+    center,
+    best,
+    stage,
+    stage_idx,
+    resolution,
+    min_points,
+    score_projection,
+    score_metric,
+    thickness_method,
+    logger,
+    progress_callback,
+    progress_state,
+):
+    stage_score_projection = initial_overlap_stage_score_projection(
+        stage,
+        score_projection,
+    )
+    tilt_directions = tilt_direction_values(stage)
+    tilts = tilt_magnitude_values(stage)
+    yaw_deltas = yaw_delta_values(stage)
+    tilt_frame = str(stage.get("tilt_frame", "local")).strip().lower()
+    cases = len(tilt_directions) * len(tilts) * len(yaw_deltas)
+    logger.info(
+        f"{lidar_name} initial-overlap tilt-yaw-vector stage {stage_idx + 1}: "
+        f"tilt_directions={len(tilt_directions)}, tilts={len(tilts)}, "
+        f"yaw={len(yaw_deltas)}, projection={stage_score_projection}, "
+        f"tilt_frame={tilt_frame}, cases={cases}"
+    )
+
+    case_idx = 0
+    for tilt_direction in tilt_directions:
+        for tilt in tilts:
+            for yaw_delta in yaw_deltas:
+                case_idx += 1
+                pose = pose_with_tilt_yaw_delta(
+                    center,
+                    tilt_direction,
+                    tilt,
+                    yaw_delta,
+                    tilt_frame,
+                )
+                score = initial_scan_overlap_score(
+                    chunks,
+                    pose,
+                    indices,
+                    resolution,
+                    min_points,
+                    stage_score_projection,
+                    score_metric,
+                    thickness_method,
+                )
+                improved = update_best_initial_overlap(
+                    best,
+                    pose,
+                    score,
+                    logger,
+                    lidar_name,
+                    stage_idx,
+                    case_idx,
+                    cases,
+                    axis_name="tilt_yaw_vector",
+                )
+                maybe_report_initial_overlap_progress(
+                    progress_callback,
+                    progress_state,
+                    chunks,
+                    pose,
+                    indices,
+                    lidar_name,
+                    stage_idx,
+                    case_idx,
+                    cases,
+                    best,
+                    stage_score_projection,
+                    current_score=score,
+                    current_vector=tilt_vector_plot_info(
+                        pose,
+                        stage_mode="tilt_yaw_vector",
+                        tilt_direction=tilt_direction,
+                        tilt=tilt,
+                    ),
+                    best_vector=tilt_vector_plot_info(
+                        best,
+                        stage_mode="tilt_yaw_vector",
+                    ),
+                    force=improved,
+                )
+
+
 def optimize_lidar_rpy_by_initial_overlap(
     lidar_name,
     chunks,
@@ -639,10 +1050,28 @@ def optimize_lidar_rpy_by_initial_overlap(
                 progress_callback,
                 progress_state,
             )
+        elif stage_mode in ("tilt_yaw_vector", "tilt_vector", "plane_tilt"):
+            optimize_initial_overlap_tilt_yaw_vector_stage(
+                lidar_name,
+                chunks,
+                indices,
+                center,
+                best,
+                stage,
+                stage_idx,
+                resolution,
+                min_points,
+                score_projection,
+                score_metric,
+                thickness_method,
+                logger,
+                progress_callback,
+                progress_state,
+            )
         else:
             raise ValueError(
                 "initial_overlap stage mode must be one of: "
-                "full_grid, axis_sequential"
+                "full_grid, axis_sequential, tilt_yaw_vector"
             )
 
         center.update(best)
@@ -655,6 +1084,59 @@ def optimize_lidar_rpy_by_initial_overlap(
     return {
         **best,
         "success": True,
+    }
+
+
+def run_initial_overlap_calibration_for_lidar(
+    name,
+    chunks,
+    init_pose,
+    overlap_stages,
+    overlap_resolution,
+    overlap_min_points,
+    overlap_score_projection,
+    overlap_score_metric,
+    overlap_thickness_method,
+    overlap_stride,
+    max_overlap_scans,
+    logger,
+    progress_interval_sec,
+    progress_callback,
+):
+    start_time = time.perf_counter()
+    if len(chunks) < 2:
+        logger.warn(f"{name}: not enough scans for initial overlap calibration")
+        return {
+            "name": name,
+            "elapsed": time.perf_counter() - start_time,
+            "result": {
+                **copy_pose(init_pose),
+                "score": 1e9,
+                "success": False,
+                "reason": "not_enough_scans_for_initial_overlap",
+            },
+        }
+
+    result = optimize_lidar_rpy_by_initial_overlap(
+        name,
+        chunks,
+        init_pose,
+        overlap_stages,
+        overlap_resolution,
+        overlap_min_points,
+        overlap_score_projection,
+        overlap_score_metric,
+        overlap_thickness_method,
+        overlap_stride,
+        max_overlap_scans,
+        logger,
+        progress_interval_sec,
+        progress_callback=progress_callback,
+    )
+    return {
+        "name": name,
+        "elapsed": time.perf_counter() - start_time,
+        "result": result,
     }
 
 
@@ -683,30 +1165,51 @@ def optimize_against_reference_cloud(
     progress_interval_sec = max(float(progress_interval_sec), 0.0)
 
     for stage_idx, stage in enumerate(stages):
-        xs = optional_stage_values(center["x"], stage, "range_x", "step_x")
-        ys = optional_stage_values(center["y"], stage, "range_y", "step_y")
-        zs = optional_stage_values(center["z"], stage, "range_z", "step_z")
-        rolls = optional_angle_stage_values(
+        active_axes = stage_axis_set(
+            stage,
+            ["x", "y", "z", "roll", "pitch", "yaw"],
+        )
+        invalid_axes = active_axes - {"x", "y", "z", "roll", "pitch", "yaw"}
+        if invalid_axes:
+            raise ValueError(f"invalid reference_alignment axes: {sorted(invalid_axes)}")
+
+        xs = selective_stage_values(
+            center["x"], stage, "x", "range_x", "step_x", active_axes
+        )
+        ys = selective_stage_values(
+            center["y"], stage, "y", "range_y", "step_y", active_axes
+        )
+        zs = selective_stage_values(
+            center["z"], stage, "z", "range_z", "step_z", active_axes
+        )
+        rolls = selective_angle_stage_values(
             center["roll"],
             stage,
+            "roll",
             "range_roll_deg",
             "step_roll_deg",
+            active_axes,
         )
-        pitches = optional_angle_stage_values(
+        pitches = selective_angle_stage_values(
             center["pitch"],
             stage,
+            "pitch",
             "range_pitch_deg",
             "step_pitch_deg",
+            active_axes,
         )
-        yaws = optional_angle_stage_values(
+        yaws = selective_angle_stage_values(
             center["yaw"],
             stage,
+            "yaw",
             "range_yaw_deg",
             "step_yaw_deg",
+            active_axes,
         )
         cases = len(xs) * len(ys) * len(zs) * len(rolls) * len(pitches) * len(yaws)
         logger.info(
             f"{lidar_name} reference-cloud stage {stage_idx + 1}: "
+            f"axes={sorted(active_axes)}, "
             f"x={len(xs)}, y={len(ys)}, z={len(zs)}, "
             f"roll={len(rolls)}, pitch={len(pitches)}, yaw={len(yaws)}, "
             f"cases={cases}"
@@ -815,6 +1318,47 @@ def calibrate_6dof(
     progress_callback=None,
 ):
     logger = logger or NullLogger()
+    feedback_calib_count = int(calib_config.get("feedback_calib_count", 0))
+    if feedback_calib_count > 0:
+        feedback_config = copy.deepcopy(calib_config)
+        feedback_config["feedback_calib_count"] = 0
+        current_lidar_config = copy.deepcopy(lidar_config)
+        feedback_iterations = []
+        final_output = None
+        total_iterations = feedback_calib_count + 1
+
+        for iteration_idx in range(total_iterations):
+            logger.info(
+                "Feedback calibration iteration "
+                f"{iteration_idx + 1}/{total_iterations}"
+            )
+            final_output = calibrate_6dof(
+                current_lidar_config,
+                feedback_config,
+                cloud_buffers,
+                collection_elapsed_sec=collection_elapsed_sec,
+                logger=logger,
+                progress_callback=progress_callback,
+            )
+            feedback_iterations.append(feedback_iteration_summary(
+                iteration_idx,
+                final_output["result_yaml"],
+            ))
+            if iteration_idx < total_iterations - 1:
+                current_lidar_config = config_with_feedback_poses(
+                    current_lidar_config,
+                    final_output["result_yaml"],
+                )
+
+        final_output["result_yaml"]["feedback_calib_count"] = feedback_calib_count
+        final_output["result_yaml"]["feedback_iterations"] = feedback_iterations
+        final_output["result_yaml"]["feedback_final_iteration"] = total_iterations - 1
+        final_output["calibrated_config"] = make_calibrated_config(
+            config_with_feedback_poses(lidar_config, final_output["result_yaml"]),
+            final_output["result_yaml"],
+        )
+        return final_output
+
     calibration_start_time = time.perf_counter()
 
     lidars = load_lidar_entries(lidar_config)
@@ -851,6 +1395,12 @@ def calibrate_6dof(
     overlap_min_points = int(overlap_cfg.get("min_points_per_cell", min_points))
     overlap_stride = int(overlap_cfg.get("scan_stride", 1))
     max_overlap_scans = overlap_cfg.get("max_scans")
+    overlap_parallel = bool(overlap_cfg.get("parallel", False))
+    overlap_max_workers = int(overlap_cfg.get(
+        "max_workers",
+        min(len(lidar_names), os.cpu_count() or 1),
+    ))
+    overlap_max_workers = max(1, min(overlap_max_workers, max(len(lidar_names), 1)))
 
     reference_cfg = calib_config.get("reference_alignment", {})
     reference_stages = reference_cfg.get("stages", [])
@@ -887,11 +1437,6 @@ def calibrate_6dof(
             f"from {len(downsampled_chunks)} scans"
         )
 
-    before_clouds = {
-        name: transform_scan_chunks(scan_chunks_by_lidar[name], lidar_poses[name])
-        for name in lidar_names
-    }
-
     result_yaml = make_initial_result_yaml(reference_lidar, lidars, lidar_poses)
     result_yaml["calibration_mode"] = "initial_overlap_rpy_then_reference_alignment"
     result_yaml["match_mode"] = "initial_overlap_rpy_reference_cloud"
@@ -902,6 +1447,7 @@ def calibrate_6dof(
     result_yaml["reference_score_projection"] = reference_score_projection
     result_yaml["reference_project_cloud_to_xy"] = reference_project_cloud_to_xy
     result_yaml["reference_alignment_source"] = "initial_overlap_cloud"
+    result_yaml["graph_cloud_source"] = "reference_alignment_ndt_input"
     result_yaml["calibration_order"] = lidar_names
     result_yaml["timing_sec"] = {
         "collection": collection_elapsed_sec,
@@ -913,17 +1459,44 @@ def calibrate_6dof(
     logger.info("Stage 1: per-lidar initial scan overlap roll/pitch/yaw calibration")
     overlap_corrected_poses = copy.deepcopy(lidar_poses)
     for name in lidar_names:
-        chunks = scan_chunks_by_lidar[name]
-        if len(chunks) < 2:
-            result_yaml["lidars"][name]["success"] = False
-            result_yaml["lidars"][name]["reason"] = "not_enough_scans_for_initial_overlap"
-            logger.warn(f"{name}: not enough scans for initial overlap calibration")
-            continue
+        result_yaml["lidars"][name]["initial_pose"] = copy_pose(lidar_poses[name])
 
-        start_time = time.perf_counter()
-        overlap_result = optimize_lidar_rpy_by_initial_overlap(
+    def apply_initial_overlap_result(stage1_output):
+        name = stage1_output["name"]
+        elapsed = stage1_output["elapsed"]
+        overlap_result = stage1_output["result"]
+        result_yaml["timing_sec"]["initial_overlap_rpy"][name] = elapsed
+        if overlap_result["success"]:
+            overlap_corrected_poses[name]["roll"] = overlap_result["roll"]
+            overlap_corrected_poses[name]["pitch"] = overlap_result["pitch"]
+            overlap_corrected_poses[name]["yaw"] = overlap_result["yaw"]
+        else:
+            result_yaml["lidars"][name]["success"] = False
+            if "reason" in overlap_result:
+                result_yaml["lidars"][name]["reason"] = overlap_result["reason"]
+
+        result_yaml["lidars"][name]["initial_overlap_score"] = float(overlap_result["score"])
+        result_yaml["lidars"][name]["initial_overlap_success"] = overlap_result["success"]
+        result_yaml["lidars"][name]["initial_overlap_time_sec"] = elapsed
+        result_yaml["lidars"][name]["initial_overlap_pose"] = {
+            key: float(overlap_corrected_poses[name][key])
+            for key in ("x", "y", "z", "roll", "pitch", "yaw")
+        }
+        result_yaml["lidars"][name]["stage1_result"] = {
+            "pose": copy_pose(overlap_corrected_poses[name]),
+            "delta_from_initial": pose_delta(
+                lidar_poses[name],
+                overlap_corrected_poses[name],
+            ),
+            "score": float(overlap_result["score"]),
+            "success": bool(overlap_result["success"]),
+            "time_sec": elapsed,
+        }
+
+    stage1_jobs = [
+        (
             name,
-            chunks,
+            scan_chunks_by_lidar[name],
             lidar_poses[name],
             overlap_stages,
             overlap_resolution,
@@ -935,24 +1508,39 @@ def calibrate_6dof(
             max_overlap_scans,
             logger,
             progress_interval_sec,
-            progress_callback=progress_callback,
+            progress_callback,
         )
-        elapsed = time.perf_counter() - start_time
-        result_yaml["timing_sec"]["initial_overlap_rpy"][name] = elapsed
-        if overlap_result["success"]:
-            overlap_corrected_poses[name]["roll"] = overlap_result["roll"]
-            overlap_corrected_poses[name]["pitch"] = overlap_result["pitch"]
-            overlap_corrected_poses[name]["yaw"] = overlap_result["yaw"]
-
-        result_yaml["lidars"][name]["initial_overlap_score"] = float(overlap_result["score"])
-        result_yaml["lidars"][name]["initial_overlap_success"] = overlap_result["success"]
-        result_yaml["lidars"][name]["initial_overlap_time_sec"] = elapsed
-        result_yaml["lidars"][name]["initial_overlap_pose"] = {
-            key: float(overlap_corrected_poses[name][key])
-            for key in ("x", "y", "z", "roll", "pitch", "yaw")
-        }
+        for name in lidar_names
+    ]
+    if overlap_parallel and overlap_max_workers > 1 and len(stage1_jobs) > 1:
+        logger.info(
+            "Stage 1 initial-overlap parallel enabled: "
+            f"workers={overlap_max_workers}"
+        )
+        with ThreadPoolExecutor(max_workers=overlap_max_workers) as executor:
+            futures = [
+                executor.submit(run_initial_overlap_calibration_for_lidar, *job)
+                for job in stage1_jobs
+            ]
+            stage1_outputs = [future.result() for future in as_completed(futures)]
+        for stage1_output in sorted(stage1_outputs, key=lambda item: lidar_names.index(item["name"])):
+            apply_initial_overlap_result(stage1_output)
+    else:
+        for job in stage1_jobs:
+            apply_initial_overlap_result(
+                run_initial_overlap_calibration_for_lidar(*job),
+            )
 
     logger.info("Stage 2 uses initial-overlap comparison clouds")
+    initial_overlap_before_clouds = {
+        name: combined_initial_overlap_cloud(
+            scan_chunks_by_lidar[name],
+            lidar_poses[name],
+            overlap_stride,
+            max_overlap_scans,
+        )
+        for name in lidar_names
+    }
     overlap_clouds = {
         name: combined_initial_overlap_cloud(
             scan_chunks_by_lidar[name],
@@ -971,9 +1559,17 @@ def calibrate_6dof(
     else:
         alignment_clouds = overlap_clouds
 
+    if reference_project_cloud_to_xy:
+        before_clouds = {
+            name: project_cloud_to_xy_plane(cloud)
+            for name, cloud in initial_overlap_before_clouds.items()
+        }
+    else:
+        before_clouds = initial_overlap_before_clouds
+
     logger.info("Stage 2: reference lidar cloud alignment")
     reference_cloud = alignment_clouds[reference_lidar]
-    after_clouds = {reference_lidar: overlap_clouds[reference_lidar]}
+    after_clouds = {reference_lidar: alignment_clouds[reference_lidar]}
     fused_cloud = reference_cloud
 
     reference_pose = overlap_corrected_poses[reference_lidar]
@@ -984,6 +1580,14 @@ def calibrate_6dof(
     result_yaml["lidars"][reference_lidar]["optimized"] = True
     result_yaml["lidars"][reference_lidar]["success"] = True
     result_yaml["lidars"][reference_lidar]["score"] = 0.0
+    result_yaml["lidars"][reference_lidar]["stage2_result"] = {
+        "pose": copy_pose(reference_pose),
+        "delta_from_stage1": pose_delta(reference_pose, reference_pose),
+        "score": 0.0,
+        "success": True,
+        "fixed_as_reference": True,
+    }
+    result_yaml["lidars"][reference_lidar]["final_pose"] = copy_pose(reference_pose)
 
     for lidar in lidars:
         name = lidar["name"]
@@ -1043,31 +1647,61 @@ def calibrate_6dof(
         result_yaml["lidars"][name]["optimization_time_sec"] = elapsed
         result_yaml["lidars"][name]["success"] = result["success"]
         result_yaml["lidars"][name]["optimized"] = True
+        result_yaml["lidars"][name]["stage2_result"] = {
+            "pose": {
+                key: float(result[key])
+                for key in ("x", "y", "z", "roll", "pitch", "yaw")
+            },
+            "delta_from_stage1": pose_delta(init_pose, result),
+            "initial_score": initial_score,
+            "score": float(result["score"]),
+            "score_improvement": float(initial_score - result["score"]),
+            "success": bool(result["success"]),
+            "time_sec": elapsed,
+        }
+        result_yaml["lidars"][name]["final_pose"] = {
+            key: float(result[key])
+            for key in ("x", "y", "z", "roll", "pitch", "yaw")
+        }
 
-        after_clouds[name] = transform_accumulated_cloud(
-            overlap_clouds[name],
-            init_pose,
-            result,
-        )
         aligned_cloud = transform_accumulated_cloud(
             alignment_clouds[name],
             init_pose,
             result,
         )
+        after_clouds[name] = aligned_cloud
         fused_cloud = np.vstack([fused_cloud, aligned_cloud])
         fused_cloud = downsample_xyz(fused_cloud, downsample_voxel)
 
     finish_time = time.perf_counter()
+    for name in lidar_names:
+        if "final_pose" not in result_yaml["lidars"][name]:
+            result_yaml["lidars"][name]["final_pose"] = {
+                key: float(result_yaml["lidars"][name][key])
+                for key in ("x", "y", "z", "roll", "pitch", "yaw")
+                if key in result_yaml["lidars"][name]
+            }
+
     result_yaml["timing_sec"]["calibration"] = finish_time - calibration_start_time
     result_yaml["timing_sec"]["total"] = (
         result_yaml["timing_sec"]["collection"]
         + result_yaml["timing_sec"]["calibration"]
     )
+    for name in lidar_names:
+        result_yaml["lidars"][name] = organize_lidar_result(
+            result_yaml["lidars"][name],
+        )
 
     return {
         "result_yaml": result_yaml,
         "calibrated_config": make_calibrated_config(lidar_config, result_yaml),
         "before_clouds": before_clouds,
         "after_clouds": after_clouds,
+        "extra_graph_clouds": {
+            "initial_overlap": {
+                "before": initial_overlap_before_clouds,
+                "after": overlap_clouds,
+            },
+        },
         "point_dim": 3,
     }

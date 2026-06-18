@@ -62,6 +62,12 @@ def run_plotter_process(plotter_class, args, kwargs, command_queue):
 
 class AsyncPlotter:
     def __init__(self, plotter_class, *args, **kwargs):
+        self.enabled = bool(kwargs.get("enabled", False))
+        self.command_queue = None
+        self.process = None
+        if not self.enabled:
+            return
+
         self.command_queue = mp.Queue(maxsize=1)
         self.process = mp.Process(
             target=run_plotter_process,
@@ -71,6 +77,9 @@ class AsyncPlotter:
         self.process.start()
 
     def update(self, *args, **kwargs):
+        if not self.enabled or self.command_queue is None:
+            return
+
         command = ("update", args, kwargs)
         while True:
             try:
@@ -83,6 +92,10 @@ class AsyncPlotter:
                     return
 
     def close(self, force=False):
+        if not self.enabled or self.command_queue is None or self.process is None:
+            return
+
+        self.enabled = False
         command = ("close", (), {"force": force})
         try:
             self.command_queue.put_nowait(command)
@@ -95,10 +108,24 @@ class AsyncPlotter:
                 self.command_queue.put_nowait(command)
             except queue.Full:
                 pass
-        self.process.join(timeout=2.0)
-        if self.process.is_alive() and force:
+        self.process.join(timeout=0.5 if force else 2.0)
+        if self.process.is_alive():
             self.process.terminate()
             self.process.join(timeout=1.0)
+        if self.process.is_alive():
+            self.process.kill()
+            self.process.join(timeout=1.0)
+        try:
+            self.command_queue.close()
+            self.command_queue.cancel_join_thread()
+        except Exception:
+            pass
+        try:
+            self.process.close()
+        except Exception:
+            pass
+        self.command_queue = None
+        self.process = None
 
 
 def sample_points(points, max_points):
@@ -541,6 +568,8 @@ class NdtLivePlot2D:
         best_target_cloud=None,
         best_candidate_cloud=None,
         current_score=None,
+        current_vector=None,
+        best_vector=None,
         force=False,
     ):
         if not self.enabled or self.fig is None or self.ax is None:
@@ -682,6 +711,8 @@ class NdtLivePlot3D:
         best_target_cloud=None,
         best_candidate_cloud=None,
         current_score=None,
+        current_vector=None,
+        best_vector=None,
         force=False,
     ):
         if (
@@ -740,6 +771,7 @@ class NdtLivePlot3D:
             candidate_cloud,
             lidar_name,
             limits_attr_prefix="current",
+            vector_info=current_vector,
         )
         self.draw_3d_and_xy_pair(
             self.ax_best,
@@ -750,6 +782,7 @@ class NdtLivePlot3D:
             best_candidate_cloud,
             lidar_name,
             limits_attr_prefix="best",
+            vector_info=best_vector,
         )
         self.fig.suptitle(title)
 
@@ -767,6 +800,7 @@ class NdtLivePlot3D:
         candidate_cloud,
         lidar_name,
         limits_attr_prefix,
+        vector_info=None,
     ):
         plotted = []
         if len(target_cloud) > 0:
@@ -804,6 +838,8 @@ class NdtLivePlot3D:
             )
             plotted.append(candidate_cloud)
 
+        self.draw_vector_3d(ax_3d, plotted, vector_info)
+
         ax_3d.set_title(title_3d)
         ax_3d.set_xlabel("x [m]")
         ax_3d.set_ylabel("y [m]")
@@ -830,6 +866,56 @@ class NdtLivePlot3D:
         )
         setattr(self, limits_2d_attr, limits_2d)
         apply_axis_limits_2d(ax_xy, limits_2d)
+
+    def draw_vector_3d(self, ax_3d, plotted, vector_info):
+        if not vector_info:
+            return
+
+        normal = np.asarray(vector_info.get("normal", []), dtype=np.float64)
+        if normal.shape != (3,):
+            return
+        norm = np.linalg.norm(normal)
+        if norm < 1e-9:
+            return
+        normal = normal / norm
+
+        if plotted:
+            all_points = np.vstack(plotted)
+            origin = np.mean(all_points, axis=0)
+            span = np.max(np.ptp(all_points, axis=0))
+            length = max(float(span) * 0.15, 0.25)
+        else:
+            origin = np.zeros(3)
+            length = 0.5
+
+        ax_3d.quiver(
+            origin[0],
+            origin[1],
+            origin[2],
+            normal[0],
+            normal[1],
+            normal[2],
+            length=length,
+            normalize=True,
+            color="tab:blue",
+            linewidth=2.0,
+            label="scan normal",
+        )
+
+        label_parts = ["normal"]
+        if "tilt_direction_deg" in vector_info:
+            label_parts.append(f"dir={vector_info['tilt_direction_deg']:.1f}deg")
+        if "tilt_deg" in vector_info:
+            label_parts.append(f"tilt={vector_info['tilt_deg']:.2f}deg")
+        end = origin + normal * length
+        ax_3d.text(
+            end[0],
+            end[1],
+            end[2],
+            " ".join(label_parts),
+            color="tab:blue",
+            fontsize=8,
+        )
 
     def close(self, force=False):
         if self.keep_open and not force:
@@ -1144,6 +1230,122 @@ def plot_6dof_result_summary(
         plt.close(fig)
 
 
+def plot_6dof_cloud_summary(
+    title,
+    clouds,
+    save_path,
+    axis_limits=None,
+    max_points=12000,
+    show_default_grid=True,
+    show_result_plot=False,
+    keep_result_plot_open=False,
+):
+    output_dir = os.path.dirname(save_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    if axis_limits is None:
+        axis_limits = {
+            "xy": cloud_axis_limits([clouds], (0, 1)),
+            "xz": cloud_axis_limits([clouds], (0, 2)),
+            "yz": cloud_axis_limits([clouds], (1, 2)),
+        }
+
+    plot_specs = [
+        ("XY", clouds, (0, 1), ("x", "y"), axis_limits.get("xy")),
+        ("XZ", clouds, (0, 2), ("x", "z"), axis_limits.get("xz")),
+        ("YZ", clouds, (1, 2), ("y", "z"), axis_limits.get("yz")),
+    ]
+
+    fig, axes_grid = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+    legend_handles = None
+    legend_labels = None
+    for ax, (subplot_title, plot_clouds, axes, labels, limits) in zip(
+        axes_grid,
+        plot_specs,
+    ):
+        draw_clouds_projection_on_axis(
+            ax,
+            subplot_title,
+            plot_clouds,
+            axes,
+            labels,
+            axis_limits=limits,
+            max_points=max_points,
+            show_default_grid=show_default_grid,
+        )
+        if legend_handles is None:
+            legend_handles, legend_labels = ax.get_legend_handles_labels()
+
+    if legend_handles:
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="upper center",
+            ncol=max(len(legend_labels), 1),
+        )
+    fig.suptitle(title, y=1.05)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show_result_plot and is_interactive_backend():
+        plt.show(block=False)
+        plt.pause(0.001)
+        if not keep_result_plot_open:
+            plt.close(fig)
+    else:
+        plt.close(fig)
+
+
+def safe_plot_name(name):
+    return "".join(
+        char if char.isalnum() or char in ("-", "_") else "_"
+        for char in str(name)
+    )
+
+
+def plot_initial_overlap_results(
+    target,
+    calib_config,
+    initial_overlap_clouds,
+    max_points=12000,
+    show_default_grid=True,
+    show_result_plot=False,
+    keep_result_plot_open=False,
+):
+    output_dir = resolve_output_path(
+        target["workdir"],
+        calib_config.get("output_dir", "output"),
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
+    outputs = []
+    before_clouds = initial_overlap_clouds.get("before", {})
+    after_clouds = initial_overlap_clouds.get("after", {})
+    for name in before_clouds:
+        if name not in after_clouds:
+            continue
+
+        save_path = resolve_output_path(
+            output_dir,
+            f"{safe_plot_name(name)}_initial_overlap_result.png",
+        )
+        plot_6dof_result_summary(
+            {name: before_clouds[name]},
+            {name: after_clouds[name]},
+            save_path,
+            max_points=max_points,
+            show_default_grid=show_default_grid,
+            show_result_plot=show_result_plot,
+            keep_result_plot_open=keep_result_plot_open,
+        )
+        outputs.append({
+            "path": save_path,
+            "exists": os.path.exists(save_path),
+        })
+
+    return outputs
+
+
 def load_graph_clouds(path):
     if not os.path.exists(path):
         return None
@@ -1156,10 +1358,24 @@ def load_graph_clouds(path):
         before_clouds[name] = data[f"before_{idx}"]
         after_clouds[name] = data[f"after_{idx}"]
 
+    extra_graph_clouds = {}
+    if "initial_overlap_names" in data:
+        initial_names = [str(name) for name in data["initial_overlap_names"]]
+        initial_before_clouds = {}
+        initial_after_clouds = {}
+        for idx, name in enumerate(initial_names):
+            initial_before_clouds[name] = data[f"initial_overlap_before_{idx}"]
+            initial_after_clouds[name] = data[f"initial_overlap_after_{idx}"]
+        extra_graph_clouds["initial_overlap"] = {
+            "before": initial_before_clouds,
+            "after": initial_after_clouds,
+        }
+
     return {
         "lidar_names": lidar_names,
         "before_clouds": before_clouds,
         "after_clouds": after_clouds,
+        "extra_graph_clouds": extra_graph_clouds,
     }
 
 
@@ -1392,7 +1608,7 @@ def expected_plot_paths(target, calib_config):
     )
 
     if target["label"] == "6dof":
-        return [
+        paths = [
             resolve_output_path(
                 output_dir,
                 calib_config.get(
@@ -1401,6 +1617,22 @@ def expected_plot_paths(target, calib_config):
                 ),
             )
         ]
+        if "before_plot_png" in calib_config:
+            paths.append(resolve_output_path(
+                output_dir,
+                calib_config.get("before_plot_png"),
+            ))
+        if "after_plot_png" in calib_config:
+            paths.append(resolve_output_path(
+                output_dir,
+                calib_config.get("after_plot_png"),
+            ))
+        initial_pattern_suffix = "_initial_overlap_result.png"
+        if os.path.isdir(output_dir):
+            for filename in sorted(os.listdir(output_dir)):
+                if filename.endswith(initial_pattern_suffix):
+                    paths.append(resolve_output_path(output_dir, filename))
+        return paths
 
     plot_keys = [
         ("before_plot_png", "before_calibration.png"),
@@ -1432,6 +1664,7 @@ def generate_graphs(target, lidar_config, calib_config, result_yaml):
 
     before_clouds = graph_data["before_clouds"]
     after_clouds = graph_data["after_clouds"]
+    extra_graph_clouds = graph_data.get("extra_graph_clouds", {})
     plot_cfg = calib_config.get("plot", {})
     outputs = expected_plot_paths(target, calib_config)
     show_result_plot = bool(plot_cfg.get("show_result_plot", False))
@@ -1489,10 +1722,51 @@ def generate_graphs(target, lidar_config, calib_config, result_yaml):
         keep_result_plot_open=keep_result_plot_open,
     )
 
+    graph_outputs = collect_graph_outputs(target, calib_config)
+    xy_axis_limits = cloud_axis_limits([before_clouds, after_clouds], (0, 1))
+    if "before_plot_png" in calib_config and len(outputs) > 1:
+        plot_clouds_projection(
+            "Before Calibration",
+            before_clouds,
+            outputs[1],
+            axes=(0, 1),
+            axis_labels=("x", "y"),
+            axis_limits=xy_axis_limits,
+            max_points=max_points,
+            show_default_grid=show_default_grid,
+            show_result_plot=False,
+            keep_result_plot_open=False,
+        )
+    if "after_plot_png" in calib_config and len(outputs) > 2:
+        plot_clouds_projection(
+            "After Calibration",
+            after_clouds,
+            outputs[2],
+            axes=(0, 1),
+            axis_labels=("x", "y"),
+            axis_limits=xy_axis_limits,
+            max_points=max_points,
+            show_default_grid=show_default_grid,
+            show_result_plot=False,
+            keep_result_plot_open=False,
+        )
+    graph_outputs = collect_graph_outputs(target, calib_config)
+    initial_overlap_clouds = extra_graph_clouds.get("initial_overlap")
+    if initial_overlap_clouds:
+        graph_outputs.extend(plot_initial_overlap_results(
+            target,
+            calib_config,
+            initial_overlap_clouds,
+            max_points=max_points,
+            show_default_grid=show_default_grid,
+            show_result_plot=False,
+            keep_result_plot_open=False,
+        ))
+
     if show_result_plot and keep_result_plot_open and is_interactive_backend():
         plt.show(block=True)
 
-    return collect_graph_outputs(target, calib_config)
+    return graph_outputs
 
 
 def print_graph_summary(graph_outputs):

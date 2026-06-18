@@ -5,45 +5,145 @@ lidars:
     x: -0.2
     y: -0.1
     z: 0.225
-    roll: -0.020769418098732624
-    pitch: 0.010122909661567042
-    yaw: 3.141589999999995
-    optimized: true
-    initial_overlap_score: 0.009235177955264113
-    initial_overlap_success: true
-    initial_overlap_time_sec: 55.79383486900042
-    initial_overlap_pose:
-      x: -0.2
-      y: -0.1
-      z: 0.225
-      roll: -0.020769418098732624
-      pitch: 0.010122909661567042
-      yaw: 3.141589999999995
-    success: true
-    score: 0.0
+    roll: 0.008901179185171172
+    pitch: 0.0006981317007977508
+    yaw: -3.1415920000000073
+    poses:
+      initial:
+        x: -0.2
+        y: -0.1
+        z: 0.225
+        roll: 0.0
+        pitch: 0.0
+        yaw: -3.141592
+      stage1:
+        x: -0.2
+        y: -0.1
+        z: 0.225
+        roll: 0.008901179185171172
+        pitch: 0.0006981317007977508
+        yaw: -3.1415920000000073
+      stage2:
+        x: -0.2
+        y: -0.1
+        z: 0.225
+        roll: 0.008901179185171172
+        pitch: 0.0006981317007977508
+        yaw: -3.1415920000000073
+      final:
+        x: -0.2
+        y: -0.1
+        z: 0.225
+        roll: 0.008901179185171172
+        pitch: 0.0006981317007977508
+        yaw: -3.1415920000000073
+    deltas:
+      stage1_from_initial:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+        roll: 0.008901179185171172
+        pitch: 0.0006981317007977508
+        yaw: -7.105427357601002e-15
+      stage2_from_stage1:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+        roll: 0.0
+        pitch: 0.0
+        yaw: 0.0
+      final_from_initial:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+        roll: 0.008901179185171172
+        pitch: 0.0006981317007977508
+        yaw: -7.105427357601002e-15
+    scores:
+      stage1: 0.005693739011189591
+      stage2_initial: null
+      stage2_final: 0.0
+      stage2_improvement: null
+    timing:
+      stage1_sec: 254.37239448697073
+      stage2_sec: null
+    status:
+      optimized: true
+      success: true
+      stage1_success: true
+      stage2_success: true
+      fixed_as_reference: true
   lidar_1:
-    x: 0.20000000000000004
-    y: 0.10999999999999999
+    x: 0.19100000000000003
+    y: 0.10300000000000005
     z: 0.225
-    roll: 1.3877787807814457e-17
-    pitch: -0.017453292519943278
-    yaw: -0.0013962634015947904
-    optimized: true
-    initial_overlap_score: 0.008138820762628106
-    initial_overlap_success: true
-    initial_overlap_time_sec: 49.753534723000485
-    initial_overlap_pose:
-      x: 0.2
-      y: 0.1
-      z: 0.225
-      roll: -0.06108652381980154
-      pitch: -0.06108652381980154
-      yaw: 0.0029670597283910356
-    initial_score: 1.6734326042758403
-    score: 1.6080434500171392
-    score_improvement: 0.06538915425870107
-    optimization_time_sec: 215.43861160099914
-    success: true
+    roll: -0.09267698328089853
+    pitch: -0.07452555906015706
+    yaw: 0.0020943951023931723
+    poses:
+      initial:
+        x: 0.2
+        y: 0.1
+        z: 0.225
+        roll: 0.0
+        pitch: 0.0
+        yaw: 0.0
+      stage1:
+        x: 0.2
+        y: 0.1
+        z: 0.225
+        roll: -0.0926769832808985
+        pitch: -0.07452555906015706
+        yaw: 0.0038397243543875116
+      stage2:
+        x: 0.19100000000000003
+        y: 0.10300000000000005
+        z: 0.225
+        roll: -0.09267698328089853
+        pitch: -0.07452555906015706
+        yaw: 0.0020943951023931723
+      final:
+        x: 0.19100000000000003
+        y: 0.10300000000000005
+        z: 0.225
+        roll: -0.09267698328089853
+        pitch: -0.07452555906015706
+        yaw: 0.0020943951023931723
+    deltas:
+      stage1_from_initial:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+        roll: -0.09267698328089852
+        pitch: -0.07452555906015706
+        yaw: 0.0038397243543875116
+      stage2_from_stage1:
+        x: -0.00899999999999998
+        y: 0.0030000000000000443
+        z: 0.0
+        roll: -2.7755575615628914e-17
+        pitch: 0.0
+        yaw: -0.0017453292519943393
+      final_from_initial:
+        x: -0.00899999999999998
+        y: 0.0030000000000000443
+        z: 0.0
+        roll: -0.09267698328089854
+        pitch: -0.07452555906015706
+        yaw: 0.002094395102393172
+    scores:
+      stage1: 0.004776980231060047
+      stage2_initial: 1.6748081342608874
+      stage2_final: 1.261349137326421
+      stage2_improvement: 0.4134589969344664
+    timing:
+      stage1_sec: 251.9763209579978
+      stage2_sec: 95.09890545898816
+    status:
+      optimized: true
+      success: true
+      stage1_success: true
+      stage2_success: true
 calibration_mode: initial_overlap_rpy_then_reference_alignment
 match_mode: initial_overlap_rpy_reference_cloud
 score_projection: xy
@@ -53,16 +153,17 @@ initial_overlap_score_projection: xy
 reference_score_projection: xy
 reference_project_cloud_to_xy: true
 reference_alignment_source: initial_overlap_cloud
+graph_cloud_source: reference_alignment_ndt_input
 calibration_order:
 - lidar_2
 - lidar_1
 timing_sec:
-  collection: 122.10598731599748
+  collection: 121.63271645701025
   initial_overlap_rpy:
-    lidar_2: 55.79383486900042
-    lidar_1: 49.753534723000485
+    lidar_2: 254.37239448697073
+    lidar_1: 251.9763209579978
   reference_alignment:
-    lidar_1: 215.43861160099914
-  calibration: 321.1591986679996
-  total: 443.26518598399707
+    lidar_1: 95.09890545898816
+  calibration: 349.7595633159508
+  total: 471.39227977296105
 success: true

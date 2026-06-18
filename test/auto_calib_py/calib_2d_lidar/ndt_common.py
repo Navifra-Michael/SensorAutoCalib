@@ -89,7 +89,14 @@ def graph_data_path(target, calib_config):
     )
 
 
-def save_graph_data(path, lidar_names, before_clouds, after_clouds, point_dim):
+def save_graph_data(
+    path,
+    lidar_names,
+    before_clouds,
+    after_clouds,
+    point_dim,
+    extra_graph_clouds=None,
+):
     output_dir = os.path.dirname(path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -102,6 +109,19 @@ def save_graph_data(path, lidar_names, before_clouds, after_clouds, point_dim):
     for idx, name in enumerate(lidar_names):
         graph_arrays[f"before_{idx}"] = before_clouds.get(name, empty_cloud)
         graph_arrays[f"after_{idx}"] = after_clouds.get(name, empty_cloud)
+
+    extra_graph_clouds = extra_graph_clouds or {}
+    initial_overlap = extra_graph_clouds.get("initial_overlap")
+    if initial_overlap:
+        initial_names = list(initial_overlap.get("before", {}).keys())
+        graph_arrays["initial_overlap_names"] = np.array(initial_names)
+        for idx, name in enumerate(initial_names):
+            graph_arrays[f"initial_overlap_before_{idx}"] = (
+                initial_overlap.get("before", {}).get(name, empty_cloud)
+            )
+            graph_arrays[f"initial_overlap_after_{idx}"] = (
+                initial_overlap.get("after", {}).get(name, empty_cloud)
+            )
 
     np.savez(path, **graph_arrays)
 
