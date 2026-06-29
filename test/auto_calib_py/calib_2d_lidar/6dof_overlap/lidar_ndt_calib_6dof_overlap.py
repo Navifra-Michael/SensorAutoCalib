@@ -61,6 +61,16 @@ def pose_delta(from_pose, to_pose):
     }
 
 
+def tilt_delta_magnitude(delta):
+    if not delta:
+        return None
+
+    return float(np.hypot(
+        float(delta.get("roll", 0.0)),
+        float(delta.get("pitch", 0.0)),
+    ))
+
+
 def organize_lidar_result(raw_result):
     final_pose = raw_result.get("final_pose")
     if final_pose is None:
@@ -98,8 +108,20 @@ def organize_lidar_result(raw_result):
             if initial_pose and final_pose else None
         ),
     }
+    organized["tilt_delta_magnitude"] = {
+        "stage1_from_initial": tilt_delta_magnitude(
+            stage1_result.get("delta_from_initial"),
+        ),
+        "final_from_initial": tilt_delta_magnitude(
+            organized["deltas"]["final_from_initial"],
+        ),
+    }
     organized["scores"] = {
+        "stage1_initial": stage1_result.get("initial_score"),
         "stage1": stage1_result.get("score"),
+        "stage1_improvement": stage1_result.get("score_improvement"),
+        "stage1_improvement_ratio": stage1_result.get("score_improvement_ratio"),
+        "stage1_candidate": stage1_result.get("candidate_score"),
         "stage2_initial": stage2_result.get("initial_score"),
         "stage2_final": stage2_result.get("score"),
         "stage2_improvement": stage2_result.get("score_improvement"),
@@ -125,6 +147,9 @@ def organize_lidar_result(raw_result):
     }
     if "reason" in raw_result:
         organized["status"]["reason"] = raw_result["reason"]
+    if stage1_result.get("rejected_low_improvement"):
+        organized["status"]["stage1_rejected_low_improvement"] = True
+        organized["stage1_candidate_pose"] = stage1_result.get("candidate_pose")
     if stage2_result.get("fixed_as_reference"):
         organized["status"]["fixed_as_reference"] = True
 
@@ -271,12 +296,15 @@ def grid_thickness_score(
     min_points,
     method="pca_line",
     score_projection="xyz",
+    key_points=None,
 ):
     if len(points) == 0:
         return 1e9
 
     method = str(method).strip().lower()
-    xy_keys = np.floor(points[:, :2] / resolution).astype(np.int64)
+    if key_points is None:
+        key_points = points
+    xy_keys = np.floor(key_points[:, :2] / resolution).astype(np.int64)
     cells = {}
     for point, key in zip(points, map(tuple, xy_keys)):
         cells.setdefault(key, []).append(point)
@@ -352,6 +380,7 @@ def initial_scan_overlap_score(
     score_projection,
     score_metric,
     thickness_method,
+    fixed_grid_pose=None,
 ):
     clouds = initial_scan_overlap_clouds(chunks, pose, indices)
     target_cloud = clouds["target"]
@@ -360,14 +389,67 @@ def initial_scan_overlap_score(
         return 1e9
 
     score_metric = str(score_metric).strip().lower()
+    if (
+        score_metric in ("pca_line_zstd", "pca_xy_zstd", "thickness_zstd")
+        or score_metric.startswith("pca_line_zstd+")
+        or score_metric.startswith("pca_xy_zstd+")
+        or score_metric.startswith("thickness_zstd+")
+    ):
+        overlap_cloud = np.vstack([target_cloud, source_cloud])
+        key_points = None
+        if fixed_grid_pose is not None:
+            fixed_clouds = initial_scan_overlap_clouds(
+                chunks,
+                fixed_grid_pose,
+                indices,
+            )
+            key_points = np.vstack([
+                fixed_clouds["target"],
+                fixed_clouds["source"],
+            ])
+        z_std_weight = 0.005
+        if "+" in score_metric:
+            _, weight_text = score_metric.rsplit("+", 1)
+            z_std_weight = float(weight_text)
+        return float(
+            grid_thickness_score(
+                overlap_cloud,
+                resolution,
+                min_points,
+                "pca_line",
+                "xy",
+                key_points=key_points,
+            )
+            + z_std_weight * grid_thickness_score(
+                overlap_cloud,
+                resolution,
+                min_points,
+                "z_std",
+                "xyz",
+                key_points=key_points,
+            )
+        )
+
     if score_metric == "thickness":
         overlap_cloud = np.vstack([target_cloud, source_cloud])
+        key_points = None
+        if fixed_grid_pose is not None:
+            fixed_clouds = initial_scan_overlap_clouds(
+                chunks,
+                fixed_grid_pose,
+                indices,
+            )
+            key_points = np.vstack([
+                fixed_clouds["target"],
+                fixed_clouds["source"],
+            ])
         return float(grid_thickness_score(
             overlap_cloud,
             resolution,
             min_points,
             thickness_method,
             score_projection,
+            key_points=key_points,
         ))
 
     target_ndt = build_ndt_grid(
@@ -682,6 +764,7 @@ def optimize_initial_overlap_full_grid_stage(
     score_projection,
     score_metric,
     thickness_method,
+    fixed_grid_pose,
     logger,
     progress_callback,
     progress_state,
@@ -730,6 +813,7 @@ def optimize_initial_overlap_full_grid_stage(
                     stage_score_projection,
                     score_metric,
                     thickness_method,
+                    fixed_grid_pose=fixed_grid_pose,
                 )
                 improved = update_best_initial_overlap(
                     best,
@@ -771,6 +855,7 @@ def optimize_initial_overlap_axis_sequential_stage(
     score_projection,
     score_metric,
     thickness_method,
+    fixed_grid_pose,
     logger,
     progress_callback,
     progress_state,
@@ -844,6 +929,7 @@ def optimize_initial_overlap_axis_sequential_stage(
                     stage_score_projection,
                     score_metric,
                     thickness_method,
+                    fixed_grid_pose=fixed_grid_pose,
                 )
                 if score < axis_best_score:
                     axis_best_pose = dict(pose)
@@ -891,6 +977,7 @@ def optimize_initial_overlap_tilt_yaw_vector_stage(
     score_projection,
     score_metric,
     thickness_method,
+    fixed_grid_pose,
     logger,
     progress_callback,
     progress_state,
@@ -932,6 +1019,7 @@ def optimize_initial_overlap_tilt_yaw_vector_stage(
                     stage_score_projection,
                     score_metric,
                     thickness_method,
+                    fixed_grid_pose=fixed_grid_pose,
                 )
                 improved = update_best_initial_overlap(
                     best,
@@ -985,9 +1073,12 @@ def optimize_lidar_rpy_by_initial_overlap(
     max_overlap_scans,
     logger,
     progress_interval_sec,
+    min_score_improvement_ratio=0.0,
+    fixed_grid=False,
     progress_callback=None,
 ):
     indices = source_indices(len(chunks), overlap_stride, max_overlap_scans)
+    fixed_grid_pose = copy_pose(init_pose) if fixed_grid else None
     best = copy_pose(init_pose)
     best["score"] = initial_scan_overlap_score(
         chunks,
@@ -998,7 +1089,9 @@ def optimize_lidar_rpy_by_initial_overlap(
         score_projection,
         score_metric,
         thickness_method,
+        fixed_grid_pose=fixed_grid_pose,
     )
+    initial_score = float(best["score"])
 
     if best["score"] >= 1e9:
         return {
@@ -1028,6 +1121,7 @@ def optimize_lidar_rpy_by_initial_overlap(
                 score_projection,
                 score_metric,
                 thickness_method,
+                fixed_grid_pose,
                 logger,
                 progress_callback,
                 progress_state,
@@ -1046,6 +1140,7 @@ def optimize_lidar_rpy_by_initial_overlap(
                 score_projection,
                 score_metric,
                 thickness_method,
+                fixed_grid_pose,
                 logger,
                 progress_callback,
                 progress_state,
@@ -1064,6 +1159,7 @@ def optimize_lidar_rpy_by_initial_overlap(
                 score_projection,
                 score_metric,
                 thickness_method,
+                fixed_grid_pose,
                 logger,
                 progress_callback,
                 progress_state,
@@ -1081,8 +1177,32 @@ def optimize_lidar_rpy_by_initial_overlap(
             f"yaw={best['yaw']:.6f}, score={best['score']:.4f}"
         )
 
+    score_improvement = float(initial_score - best["score"])
+    score_improvement_ratio = float(
+        score_improvement / max(abs(initial_score), 1e-12)
+    )
+    if score_improvement_ratio < float(min_score_improvement_ratio):
+        rejected = copy_pose(init_pose)
+        rejected["score"] = initial_score
+        return {
+            **rejected,
+            "initial_score": initial_score,
+            "candidate_pose": {
+                key: float(best[key])
+                for key in ("x", "y", "z", "roll", "pitch", "yaw")
+            },
+            "candidate_score": float(best["score"]),
+            "score_improvement": score_improvement,
+            "score_improvement_ratio": score_improvement_ratio,
+            "rejected_low_improvement": True,
+            "success": True,
+        }
+
     return {
         **best,
+        "initial_score": initial_score,
+        "score_improvement": score_improvement,
+        "score_improvement_ratio": score_improvement_ratio,
         "success": True,
     }
 
@@ -1101,6 +1221,8 @@ def run_initial_overlap_calibration_for_lidar(
     max_overlap_scans,
     logger,
     progress_interval_sec,
+    min_score_improvement_ratio,
+    fixed_grid,
     progress_callback,
 ):
     start_time = time.perf_counter()
@@ -1131,6 +1253,8 @@ def run_initial_overlap_calibration_for_lidar(
         max_overlap_scans,
         logger,
         progress_interval_sec,
+        min_score_improvement_ratio,
+        fixed_grid,
         progress_callback=progress_callback,
     )
     return {
@@ -1392,6 +1516,10 @@ def calibrate_6dof(
     overlap_thickness_method = str(
         overlap_cfg.get("thickness_method", "pca_line")
     ).strip().lower()
+    overlap_min_score_improvement_ratio = float(
+        overlap_cfg.get("min_score_improvement_ratio", 0.0)
+    )
+    overlap_fixed_grid = bool(overlap_cfg.get("fixed_grid", False))
     overlap_resolution = float(overlap_cfg.get("resolution", resolution))
     overlap_min_points = int(overlap_cfg.get("min_points_per_cell", min_points))
     overlap_stride = int(overlap_cfg.get("scan_stride", 1))
@@ -1479,6 +1607,23 @@ def calibrate_6dof(
                 result_yaml["lidars"][name]["reason"] = overlap_result["reason"]
 
         result_yaml["lidars"][name]["initial_overlap_score"] = float(overlap_result["score"])
+        result_yaml["lidars"][name]["initial_overlap_initial_score"] = float(
+            overlap_result.get("initial_score", overlap_result["score"])
+        )
+        result_yaml["lidars"][name]["initial_overlap_score_improvement"] = float(
+            overlap_result.get("score_improvement", 0.0)
+        )
+        result_yaml["lidars"][name]["initial_overlap_score_improvement_ratio"] = float(
+            overlap_result.get("score_improvement_ratio", 0.0)
+        )
+        if overlap_result.get("rejected_low_improvement"):
+            result_yaml["lidars"][name]["initial_overlap_rejected_low_improvement"] = True
+            result_yaml["lidars"][name]["initial_overlap_candidate_pose"] = (
+                overlap_result.get("candidate_pose")
+            )
+            result_yaml["lidars"][name]["initial_overlap_candidate_score"] = float(
+                overlap_result.get("candidate_score", overlap_result["score"])
+            )
         result_yaml["lidars"][name]["initial_overlap_success"] = overlap_result["success"]
         result_yaml["lidars"][name]["initial_overlap_time_sec"] = elapsed
         result_yaml["lidars"][name]["initial_overlap_pose"] = {
@@ -1492,9 +1637,26 @@ def calibrate_6dof(
                 overlap_corrected_poses[name],
             ),
             "score": float(overlap_result["score"]),
+            "initial_score": float(
+                overlap_result.get("initial_score", overlap_result["score"])
+            ),
+            "score_improvement": float(
+                overlap_result.get("score_improvement", 0.0)
+            ),
+            "score_improvement_ratio": float(
+                overlap_result.get("score_improvement_ratio", 0.0)
+            ),
             "success": bool(overlap_result["success"]),
             "time_sec": elapsed,
         }
+        if overlap_result.get("rejected_low_improvement"):
+            result_yaml["lidars"][name]["stage1_result"]["rejected_low_improvement"] = True
+            result_yaml["lidars"][name]["stage1_result"]["candidate_pose"] = (
+                overlap_result.get("candidate_pose")
+            )
+            result_yaml["lidars"][name]["stage1_result"]["candidate_score"] = float(
+                overlap_result.get("candidate_score", overlap_result["score"])
+            )
 
     if overlap_enabled:
         logger.info("Stage 1: per-lidar initial scan overlap roll/pitch/yaw calibration")
@@ -1513,6 +1675,8 @@ def calibrate_6dof(
                 max_overlap_scans,
                 logger,
                 progress_interval_sec,
+                overlap_min_score_improvement_ratio,
+                overlap_fixed_grid,
                 progress_callback,
             )
             for name in lidar_names

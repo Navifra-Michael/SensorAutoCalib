@@ -112,6 +112,10 @@ def prepare_run(target, args):
         calib_config.get("calibrated_config_yaml", "calibrated_config.yaml"),
     )
     paths["graph_data_npz"] = graph_data_path(target, calib_config)
+    paths["collection_cache_npz"] = resolve_output_path(
+        output_dir,
+        calib_config.get("collection_cache_npz", "collection_cache.npz"),
+    )
 
     command = ["internal", target.get("command_label", target["label"])]
 
@@ -140,6 +144,7 @@ def run_data_association(calibration_run, dry_run=False):
         print("[data_association] collecting topic data...")
         cloud_buffers, collection_elapsed_sec = collect_topic_data(calibration_run)
         print_collection_summary(cloud_buffers, collection_elapsed_sec)
+        save_collection_cache(calibration_run, cloud_buffers)
         print("[data_association] collection finished. Running NDT calculation...")
         ndt_start_time = time.perf_counter()
         calibration_output = run_ndt_calculation(
@@ -180,6 +185,67 @@ def run_data_association(calibration_run, dry_run=False):
         result_yaml=result_yaml,
         calibrated_config=calibrated_config,
     )
+
+
+def cloud_buffers_have_data(cloud_buffers):
+    return any(len(chunks) > 0 for chunks in cloud_buffers.values())
+
+
+def save_collection_cache(calibration_run, cloud_buffers):
+    if not cloud_buffers_have_data(cloud_buffers):
+        return
+
+    path = calibration_run.paths["collection_cache_npz"]
+    output_dir = os.path.dirname(path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    lidar_names = list(cloud_buffers.keys())
+    arrays = {
+        "mode": np.array(calibration_run.target["label"]),
+        "lidar_names": np.array(lidar_names),
+    }
+    for name in lidar_names:
+        arrays[f"chunks_{name}"] = np.array(cloud_buffers[name], dtype=object)
+
+    np.savez(path, **arrays)
+    print(f"[data_association] saved collection cache: {path}")
+
+
+def load_collection_cache(calibration_run):
+    path = calibration_run.paths["collection_cache_npz"]
+    if not os.path.exists(path):
+        return None
+
+    with np.load(path, allow_pickle=True) as data:
+        lidar_names = [str(name) for name in data["lidar_names"]]
+        cloud_buffers = {}
+        for name in lidar_names:
+            key = f"chunks_{name}"
+            if key not in data:
+                raise ValueError(f"collection cache is missing {key}")
+            cloud_buffers[name] = list(data[key])
+
+    expected_entries = lidar_entries(
+        calibration_run.lidar_config,
+        (
+            ("x", "y", "z", "roll", "pitch", "yaw")
+            if calibration_run.target["label"] == "6dof"
+            else ("x", "y", "yaw")
+        ),
+    )
+    expected_names = [entry["name"] for entry in expected_entries]
+    missing = set(expected_names) - set(cloud_buffers.keys())
+    if missing:
+        raise ValueError(
+            "collection cache does not contain all configured lidars: "
+            f"{sorted(missing)}"
+        )
+
+    return {
+        name: cloud_buffers.get(name, [])
+        for name in expected_names
+    }
 
 
 def lidar_entries(lidar_config, required_pose_keys):
@@ -525,12 +591,24 @@ class DataAssociationCollector(Node):
             calibration_run.calib_config.get("collect_duration_sec", 5.0)
         )
         self.finished = False
+        self.used_collection_cache = False
         self.wall_start_time = time.perf_counter()
+        self.last_data_wall_time = self.wall_start_time
+        self.cache_warned = False
         self.start_time = self.get_clock().now()
         self.subscribers = []
         collection_cfg = calibration_run.calib_config.get("collection", {})
+        self.saved_data_fallback = bool(
+            collection_cfg.get("saved_data_fallback", True)
+        )
+        self.saved_data_timeout_sec = float(
+            collection_cfg.get("saved_data_timeout_sec", 5.0)
+        )
         self.overlap_filter_voxel = float(
             collection_cfg.get("overlap_filter_voxel", 0.0)
+        )
+        self.zero_roll_pitch_for_filter = bool(
+            collection_cfg.get("zero_roll_pitch_for_filter", True)
         )
         self.sample_mode = str(
             collection_cfg.get("sample_mode", "all")
@@ -646,6 +724,10 @@ class DataAssociationCollector(Node):
                 "Collection overlap filter enabled: "
                 f"voxel={self.overlap_filter_voxel:.4f}m"
             )
+        if self.mode == "6dof" and self.zero_roll_pitch_for_filter:
+            self.get_logger().info(
+                "Collection filter pose uses roll=0 and pitch=0."
+            )
         if self.stable_filter_enabled:
             self.get_logger().info(
                 "Collection stable filter enabled: "
@@ -679,6 +761,12 @@ class DataAssociationCollector(Node):
             f"Collecting {self.mode} calibration data for "
             f"{self.collect_duration_sec} sec..."
         )
+        if self.saved_data_fallback and self.saved_data_timeout_sec > 0.0:
+            self.get_logger().info(
+                "Collection cache fallback enabled: "
+                f"timeout={self.saved_data_timeout_sec:.3f}s, "
+                f"path={calibration_run.paths['collection_cache_npz']}"
+            )
 
     @property
     def collection_elapsed_sec(self):
@@ -773,7 +861,7 @@ class DataAssociationCollector(Node):
         return points[np.asarray(keep_indices, dtype=np.int64)]
 
     def collection_key_points(self, lidar_name, points, odom_tf=None):
-        pose = self.entry_poses[lidar_name]
+        pose = self.collection_filter_pose(lidar_name)
         if self.mode == "6dof":
             keyed_points = apply_initial_pose_3d(points, pose)
             if odom_tf is not None:
@@ -781,6 +869,16 @@ class DataAssociationCollector(Node):
             return keyed_points
 
         return apply_initial_pose_2d(points, pose)
+
+    def collection_filter_pose(self, lidar_name):
+        pose = self.entry_poses[lidar_name]
+        if self.mode != "6dof" or not self.zero_roll_pitch_for_filter:
+            return pose
+
+        filter_pose = dict(pose)
+        filter_pose["roll"] = 0.0
+        filter_pose["pitch"] = 0.0
+        return filter_pose
 
     def filter_collection_stable(self, lidar_name, points, odom_tf=None):
         if (
@@ -894,6 +992,7 @@ class DataAssociationCollector(Node):
                 "odom_tf": odom_tf,
             })
             self.mark_sampled_scan(lidar_name, msg)
+            self.last_data_wall_time = time.perf_counter()
             return
 
         points = message_to_xy(msg, topic_type)
@@ -904,6 +1003,37 @@ class DataAssociationCollector(Node):
 
         self.cloud_buffers[lidar_name].append(points)
         self.mark_sampled_scan(lidar_name, msg)
+        self.last_data_wall_time = time.perf_counter()
+
+    def try_load_collection_cache(self):
+        try:
+            cached_cloud_buffers = load_collection_cache(self.calibration_run)
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to load collection cache: {exc}")
+            return False
+
+        if cached_cloud_buffers is None:
+            if not self.cache_warned:
+                self.get_logger().warn(
+                    "No collection data received and no collection cache exists."
+                )
+                self.cache_warned = True
+            return False
+
+        self.cloud_buffers = cached_cloud_buffers
+        self.used_collection_cache = True
+        self.finished = True
+        self.get_logger().warn(
+            "No collection data received; using saved collection cache."
+        )
+        self.live_plot.update(
+            self.cloud_buffers,
+            self.collection_elapsed_sec,
+            trajectory=self.odom_trajectory,
+            force=True,
+        )
+        self.live_plot.close(force=True)
+        return True
 
     def timer_callback(self):
         if self.finished:
@@ -911,11 +1041,21 @@ class DataAssociationCollector(Node):
 
         now = self.get_clock().now()
         elapsed = (now - self.start_time).nanoseconds / 1e9
+        no_data_elapsed = time.perf_counter() - self.last_data_wall_time
         self.live_plot.update(
             self.cloud_buffers,
             elapsed,
             trajectory=self.odom_trajectory,
         )
+        if (
+            self.saved_data_fallback
+            and self.saved_data_timeout_sec > 0.0
+            and not cloud_buffers_have_data(self.cloud_buffers)
+            and no_data_elapsed >= self.saved_data_timeout_sec
+        ):
+            if self.try_load_collection_cache():
+                return
+
         if elapsed < self.collect_duration_sec:
             return
 

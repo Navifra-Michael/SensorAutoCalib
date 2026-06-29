@@ -1,5 +1,5 @@
 reference_lidar: lidar_2
-collect_duration_sec: 300.0
+collect_duration_sec: 20.0
 require_odom: true
 match_mode: initial_scan_overlap_then_reference_alignment
 feedback_calib_count: 0
@@ -27,44 +27,44 @@ initial_overlap:
   max_workers: 2
   scan_stride: 1
   max_scans: 0
-  score_metric: thickness
+  score_metric: pca_line_zstd+0.005
   thickness_method: pca_line
+  fixed_grid: true
+  min_score_improvement_ratio: 0.0
   resolution: 0.1
   min_points_per_cell: 3
   score_projection: xy
   stages:
-    - mode: axis_sequential
-      axis_order: [yaw, roll, pitch]
-      passes: 2
-      range_roll_deg: 2.5
-      range_pitch_deg: 2.5
-      # range_yaw_deg: 2.5
-      step_roll_deg: 0.05
-      step_pitch_deg: 0.05
-      # step_yaw_deg: 0.05
+    - mode: full_grid
+      range_roll_deg: 6.0
+      range_pitch_deg: 6.0
+      step_roll_deg: 0.3
+      step_pitch_deg: 0.3
 
-    - mode: axis_sequential
-      axis_order: [yaw, roll, pitch]
-      passes: 2
-      range_roll_deg: 1.0
-      range_pitch_deg: 1.0
-      # range_yaw_deg: 1.0
-      step_roll_deg: 0.01
-      step_pitch_deg: 0.01
-      # step_yaw_deg: 0.01
+    - mode: full_grid
+      range_roll_deg: 2.0
+      range_pitch_deg: 2.0
+      step_roll_deg: 0.1
+      step_pitch_deg: 0.1
+    # - mode: axis_sequential
+    #   axis_order: [yaw, roll, pitch]
+    #   passes: 2
+    #   range_roll_deg: 2.5
+    #   range_pitch_deg: 2.5
+    #   # range_yaw_deg: 2.5
+    #   step_roll_deg: 0.025
+    #   step_pitch_deg: 0.025
+    #   # step_yaw_deg: 0.05
 
-
-    # - mode: tilt_yaw_vector
-    #   tilt_frame: local
-    #   tilt_direction_min_deg: 0.0
-    #   tilt_direction_max_deg: 360.0
-    #   tilt_direction_step_deg: 0.1
-    #   min_tilt_deg: 0.0
-    #   max_tilt_deg: 1.0
-    #   step_tilt_deg: 0.2
-      # Add these two keys when yaw should also be searched in this stage.
-      # range_yaw_deg: 1.0
-      # step_yaw_deg: 0.1
+    # - mode: axis_sequential
+    #   axis_order: [yaw, roll, pitch]
+    #   passes: 2
+    #   range_roll_deg: 1.0
+    #   range_pitch_deg: 1.0
+    #   # range_yaw_deg: 1.0
+    #   step_roll_deg: 0.01
+    #   step_pitch_deg: 0.01
+    #   # step_yaw_deg: 0.01
 
 reference_alignment:
   enabled: false

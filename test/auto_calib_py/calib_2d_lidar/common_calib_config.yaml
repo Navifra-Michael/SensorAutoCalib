@@ -3,19 +3,23 @@ output_dir: output
 output_yaml: calibrated_output.yaml
 calibrated_config_yaml: calibrated_config.yaml
 graph_data_npz: calibration_graph_data.npz
+collection_cache_npz: collection_cache.npz
 before_plot_png: before_calibration.png
 after_plot_png: after_calibration.png
 
 collection:
+  saved_data_fallback: true
+  saved_data_timeout_sec: 5.0
+  zero_roll_pitch_for_filter: true
   sample_mode: time_interval # all, time_interval
-  sample_interval_sec: 2.0
+  sample_interval_sec: 0.5
   overlap_filter_voxel: 0.005
   stable_filter:
     enabled: true
-    voxel: 0.05
-    min_observations: 3
-    min_odom_translation: 0.1
-    min_odom_yaw_deg: 2.0
+    voxel: 0.02
+    min_observations: 2
+    min_odom_translation: 0.02
+    min_odom_yaw_deg: 0.5
   odom_lookup_mode: timestamp
   odom_interpolation: true
   odom_max_time_diff_sec: 0.1
