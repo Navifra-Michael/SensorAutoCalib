@@ -1,5 +1,6 @@
 import os
 import importlib.util
+import subprocess
 import sys
 import threading
 import time
@@ -89,6 +90,10 @@ def apply_runtime_env(env):
 
 def prepare_run(target, args):
     paths = validate_target(target)
+    paths["odom_noisy_script_path"] = os.path.join(
+        os.path.dirname(paths["common_calib_config_path"]),
+        "odom_noisy.py",
+    )
     lidar_config = load_yaml(paths["lidar_config_path"])
     calib_config = load_merged_calib_config(paths)
     env = build_runtime_env(args)
@@ -97,6 +102,7 @@ def prepare_run(target, args):
         calib_config,
         mode=target["label"],
     )
+    apply_odom_noisy_topic_override(lidar_config, calib_config)
 
     output_dir = resolve_output_path(
         target["workdir"],
@@ -140,6 +146,7 @@ def run_data_association(calibration_run, dry_run=False):
             calibrated_config={},
         )
 
+    odom_noisy_process = start_odom_noisy_if_enabled(calibration_run)
     try:
         print("[data_association] collecting topic data...")
         cloud_buffers, collection_elapsed_sec = collect_topic_data(calibration_run)
@@ -168,6 +175,8 @@ def run_data_association(calibration_run, dry_run=False):
         }
         calibrated_config = {}
         returncode = 1
+    finally:
+        stop_odom_noisy_process(odom_noisy_process)
 
     if returncode == 0 and result_yaml:
         graph_outputs = generate_graphs(
@@ -185,6 +194,140 @@ def run_data_association(calibration_run, dry_run=False):
         result_yaml=result_yaml,
         calibrated_config=calibrated_config,
     )
+
+
+def apply_odom_noisy_topic_override(lidar_config, calib_config):
+    noisy_cfg = calib_config.get("odom_noisy", {})
+    if not bool(noisy_cfg.get("enabled", False)):
+        return
+    if not bool(noisy_cfg.get("use_output_topic_for_calibration", False)):
+        return
+
+    output_topic = noisy_cfg.get("output_topic")
+    if not output_topic:
+        return
+
+    topics_cfg = lidar_config.setdefault("topics", {})
+    topics_cfg["odom"] = str(output_topic)
+
+
+def start_odom_noisy_if_enabled(calibration_run):
+    noisy_cfg = calibration_run.calib_config.get("odom_noisy", {})
+    if not bool(noisy_cfg.get("enabled", False)):
+        return None
+
+    script_path = calibration_run.paths["odom_noisy_script_path"]
+    if not os.path.exists(script_path):
+        raise FileNotFoundError(f"odom_noisy script not found: {script_path}")
+
+    command = build_odom_noisy_command(
+        calibration_run.python_executable,
+        script_path,
+        noisy_cfg,
+    )
+    print(f"[data_association] starting odom_noisy: {' '.join(command)}")
+    process = subprocess.Popen(command, env=calibration_run.env)
+
+    startup_wait_sec = float(noisy_cfg.get("startup_wait_sec", 0.0))
+    if startup_wait_sec > 0.0:
+        time.sleep(startup_wait_sec)
+
+    if process.poll() is not None:
+        raise RuntimeError(
+            f"odom_noisy exited early with code {process.returncode}"
+        )
+
+    return process
+
+
+def build_odom_noisy_command(python_executable, script_path, noisy_cfg):
+    command = [
+        python_executable,
+        script_path,
+        "--ros-args",
+    ]
+    params = {
+        "input_topic": noisy_cfg.get("input_topic", "/odom"),
+        "output_topic": noisy_cfg.get("output_topic", "/odom_noisy"),
+        "noise_mode": noisy_cfg.get("noise_mode", "both"),
+        "seed": noisy_cfg.get("seed", -1),
+        "apply_to_twist": noisy_cfg.get("apply_to_twist", False),
+    }
+
+    jitter_cfg = noisy_cfg.get("jitter", {})
+    params.update({
+        "jitter.frame_interval": jitter_cfg.get("frame_interval", 1),
+        "jitter.position_std": jitter_cfg.get(
+            "position_std",
+            [0.0, 0.0, 0.0],
+        ),
+        "jitter.rpy_std": jitter_cfg.get("rpy_std", [0.0, 0.0, 0.0]),
+    })
+
+    drift_cfg = noisy_cfg.get("drift", {})
+    params.update({
+        "drift.reference_distance_m": drift_cfg.get(
+            "reference_distance_m",
+            0.0,
+        ),
+        "drift.position_error_at_reference": drift_cfg.get(
+            "position_error_at_reference",
+            drift_cfg.get("position_per_reference", [0.0, 0.0, 0.0]),
+        ),
+        "drift.rpy_error_at_reference": drift_cfg.get(
+            "rpy_error_at_reference",
+            drift_cfg.get("rpy_per_reference", [0.0, 0.0, 0.0]),
+        ),
+        "drift.position_rate": drift_cfg.get(
+            "position_rate",
+            [0.0, 0.0, 0.0],
+        ),
+        "drift.rpy_rate": drift_cfg.get("rpy_rate", [0.0, 0.0, 0.0]),
+        "drift.position_random_walk_std": drift_cfg.get(
+            "position_random_walk_std",
+            [0.0, 0.0, 0.0],
+        ),
+        "drift.rpy_random_walk_std": drift_cfg.get(
+            "rpy_random_walk_std",
+            [0.0, 0.0, 0.0],
+        ),
+        "drift.max_abs_position": drift_cfg.get(
+            "max_abs_position",
+            [0.0, 0.0, 0.0],
+        ),
+        "drift.max_abs_rpy": drift_cfg.get(
+            "max_abs_rpy",
+            [0.0, 0.0, 0.0],
+        ),
+    })
+
+    for name, value in params.items():
+        command.extend(["-p", f"{name}:={ros_param_value(value)}"])
+
+    return command
+
+
+def ros_param_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(str(item) for item in value) + "]"
+    return str(value)
+
+
+def stop_odom_noisy_process(process):
+    if process is None:
+        return
+    if process.poll() is not None:
+        return
+
+    print("[data_association] stopping odom_noisy")
+    process.terminate()
+    try:
+        process.wait(timeout=3.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3.0)
 
 
 def cloud_buffers_have_data(cloud_buffers):

@@ -25,6 +25,27 @@ collection:
   odom_max_time_diff_sec: 0.1
   odom_buffer_sec: 10.0
 
+odom_noisy:
+  enabled: true
+  input_topic: /navi_robot_1/odom
+  output_topic: /navi_robot_1/odom_noisy
+  use_output_topic_for_calibration: false
+  noise_mode: both # none, jitter, drift, both
+  seed: -1
+  apply_to_twist: false
+  jitter:
+    frame_interval: 1 # 1 means update jitter every odom frame
+    position_std: [0.002, 0.002, 0.00] # meter
+    rpy_std: [0.0, 0.0, 0.005] # rad
+  drift:
+    reference_distance_m: 1.0 # accumulated drift reaches the values below after this distance
+    position_error_at_reference: [0.001, 0.0005, 0.0] # meter after reference_distance_m
+    rpy_error_at_reference: [0.0, 0.0, 0.0] # rad after reference_distance_m
+    position_random_walk_std: [0.0, 0.0, 0.0] # meter / sqrt(reference_distance_m)
+    rpy_random_walk_std: [0.0, 0.0, 0.0] # rad / sqrt(reference_distance_m)
+    max_abs_position: [0.0, 0.0, 0.0] # 0 disables clamp
+    max_abs_rpy: [0.0, 0.0, 0.0] # 0 disables clamp
+
 plot:
   backend: TkAgg
   show_lidar_arrows: true

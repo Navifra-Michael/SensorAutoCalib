@@ -17,7 +17,7 @@ plot:
 ndt:
   resolution: 0.5
   min_points_per_cell: 5
-  downsample_voxel: 0.05
+  downsample_voxel: 0.04
   score_projection: xy
   self_score_projection: xy
 
@@ -27,7 +27,7 @@ initial_overlap:
   max_workers: 2
   scan_stride: 1
   max_scans: 0
-  score_metric: pca_line_zstd+0.005
+  score_metric: pca_xy_tilt+0.001
   thickness_method: pca_line
   fixed_grid: true
   min_score_improvement_ratio: 0.0
@@ -36,16 +36,10 @@ initial_overlap:
   score_projection: xy
   stages:
     - mode: full_grid
-      range_roll_deg: 6.0
-      range_pitch_deg: 6.0
-      step_roll_deg: 0.3
-      step_pitch_deg: 0.3
-
-    - mode: full_grid
-      range_roll_deg: 2.0
-      range_pitch_deg: 2.0
-      step_roll_deg: 0.1
-      step_pitch_deg: 0.1
+      range_roll_deg: 7
+      range_pitch_deg: 7
+      step_roll_deg: 0.2
+      step_pitch_deg: 0.2
     # - mode: axis_sequential
     #   axis_order: [yaw, roll, pitch]
     #   passes: 2

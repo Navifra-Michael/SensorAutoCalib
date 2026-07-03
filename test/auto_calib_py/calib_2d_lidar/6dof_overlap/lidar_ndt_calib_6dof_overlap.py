@@ -371,6 +371,35 @@ def project_points_for_thickness(points, score_projection):
     return points
 
 
+def parse_weighted_score_metric(score_metric, metric_names, default_weight):
+    if score_metric in metric_names:
+        return float(default_weight)
+
+    for metric_name in metric_names:
+        prefix = f"{metric_name}+"
+        if score_metric.startswith(prefix):
+            return float(score_metric[len(prefix):])
+
+    return None
+
+
+def pose_tilt_penalty(pose, reference_pose=None, squared=False):
+    if reference_pose is None:
+        roll = float(pose["roll"])
+        pitch = float(pose["pitch"])
+    else:
+        roll = float(normalize_angle(
+            float(pose["roll"]) - float(reference_pose["roll"])
+        ))
+        pitch = float(normalize_angle(
+            float(pose["pitch"]) - float(reference_pose["pitch"])
+        ))
+
+    if squared:
+        return float((roll * roll) + (pitch * pitch))
+    return float(np.hypot(roll, pitch))
+
+
 def initial_scan_overlap_score(
     chunks,
     pose,
@@ -389,12 +418,22 @@ def initial_scan_overlap_score(
         return 1e9
 
     score_metric = str(score_metric).strip().lower()
-    if (
-        score_metric in ("pca_line_zstd", "pca_xy_zstd", "thickness_zstd")
-        or score_metric.startswith("pca_line_zstd+")
-        or score_metric.startswith("pca_xy_zstd+")
-        or score_metric.startswith("thickness_zstd+")
-    ):
+    z_std_weight = parse_weighted_score_metric(
+        score_metric,
+        ("pca_line_zstd", "pca_xy_zstd", "thickness_zstd"),
+        0.005,
+    )
+    tilt_weight = parse_weighted_score_metric(
+        score_metric,
+        ("pca_xy_tilt", "pca_line_tilt", "thickness_tilt"),
+        0.001,
+    )
+    tilt2_weight = parse_weighted_score_metric(
+        score_metric,
+        ("pca_xy_tilt2", "pca_line_tilt2", "thickness_tilt2"),
+        0.02,
+    )
+    if z_std_weight is not None or tilt_weight is not None or tilt2_weight is not None:
         overlap_cloud = np.vstack([target_cloud, source_cloud])
         key_points = None
         if fixed_grid_pose is not None:
@@ -407,20 +446,17 @@ def initial_scan_overlap_score(
                 fixed_clouds["target"],
                 fixed_clouds["source"],
             ])
-        z_std_weight = 0.005
-        if "+" in score_metric:
-            _, weight_text = score_metric.rsplit("+", 1)
-            z_std_weight = float(weight_text)
-        return float(
-            grid_thickness_score(
-                overlap_cloud,
-                resolution,
-                min_points,
-                "pca_line",
-                "xy",
-                key_points=key_points,
-            )
-            + z_std_weight * grid_thickness_score(
+
+        score = grid_thickness_score(
+            overlap_cloud,
+            resolution,
+            min_points,
+            "pca_line",
+            "xy",
+            key_points=key_points,
+        )
+        if z_std_weight is not None:
+            score += z_std_weight * grid_thickness_score(
                 overlap_cloud,
                 resolution,
                 min_points,
@@ -428,7 +464,18 @@ def initial_scan_overlap_score(
                 "xyz",
                 key_points=key_points,
             )
-        )
+        if tilt_weight is not None:
+            score += tilt_weight * pose_tilt_penalty(
+                pose,
+                reference_pose=fixed_grid_pose,
+            )
+        if tilt2_weight is not None:
+            score += tilt2_weight * pose_tilt_penalty(
+                pose,
+                reference_pose=fixed_grid_pose,
+                squared=True,
+            )
+        return float(score)
 
     if score_metric == "thickness":
         overlap_cloud = np.vstack([target_cloud, source_cloud])
