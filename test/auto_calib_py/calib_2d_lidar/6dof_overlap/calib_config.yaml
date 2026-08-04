@@ -27,19 +27,30 @@ initial_overlap:
   max_workers: 2
   scan_stride: 1
   max_scans: 0
-  score_metric: pca_xy_tilt+0.001
+  score_metric: pca_xy_tilt
   thickness_method: pca_line
   fixed_grid: true
   min_score_improvement_ratio: 0.0
+  distance_weight:
+    enabled: false
+    reference_range: 2.0
+    power: 1.0
+    min_weight: 0.5
+    max_weight: 3.0
   resolution: 0.1
   min_points_per_cell: 3
   score_projection: xy
   stages:
     - mode: full_grid
-      range_roll_deg: 7
-      range_pitch_deg: 7
-      step_roll_deg: 0.2
-      step_pitch_deg: 0.2
+      range_roll_deg: 5
+      range_pitch_deg: 5
+      step_roll_deg: 0.3
+      step_pitch_deg: 0.3
+    - mode: full_grid
+      range_roll_deg: 0.8
+      range_pitch_deg: 0.8
+      step_roll_deg: 0.05
+      step_pitch_deg: 0.05
     # - mode: axis_sequential
     #   axis_order: [yaw, roll, pitch]
     #   passes: 2

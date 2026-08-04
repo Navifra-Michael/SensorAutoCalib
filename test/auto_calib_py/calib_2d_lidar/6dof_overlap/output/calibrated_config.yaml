@@ -1,5 +1,5 @@
 topics:
-  odom: /navi_robot_1/odom_noisy
+  odom: /navi_robot_1/odom
   lidar_1: /navi_robot_1/front_scan
   lidar_2: /navi_robot_1/rear_scan
 lidars:
@@ -7,13 +7,13 @@ lidars:
     x: -0.2
     y: -0.1
     z: 0.225
-    roll: -0.12217304763960307
-    pitch: 0.03839724354387547
+    roll: 0.03316125578789212
+    pitch: 0.04974188368183823
     yaw: -2.3562
   lidar_1:
     x: 0.2
     y: 0.1
     z: 0.225
-    roll: -0.0418879020478638
-    pitch: -0.0802851455917391
+    roll: 0.07941248096574181
+    pitch: 0.0820304748437333
     yaw: 0.7854

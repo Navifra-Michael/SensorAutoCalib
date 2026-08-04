@@ -262,6 +262,8 @@ def initial_scan_overlap_clouds(chunks, pose, indices):
         return {
             "target": np.empty((0, 3)),
             "source": np.empty((0, 3)),
+            "target_ranges": np.empty((0,)),
+            "source_ranges": np.empty((0,)),
         }
 
     initial_odom_inv = invert_transform(chunks[0]["odom_tf"])
@@ -270,13 +272,19 @@ def initial_scan_overlap_clouds(chunks, pose, indices):
         pose,
         initial_odom_inv,
     )
-    source_cloud = np.vstack([
+    source_clouds = [
         transform_single_chunk_to_initial(chunks[idx], pose, initial_odom_inv)
         for idx in indices
-    ])
+    ]
+    source_cloud = np.vstack(source_clouds)
     return {
         "target": target_cloud,
         "source": source_cloud,
+        "target_ranges": np.linalg.norm(chunks[0]["points"][:, :2], axis=1),
+        "source_ranges": np.concatenate([
+            np.linalg.norm(chunks[idx]["points"][:, :2], axis=1)
+            for idx in indices
+        ]),
     }
 
 
@@ -297,6 +305,7 @@ def grid_thickness_score(
     method="pca_line",
     score_projection="xyz",
     key_points=None,
+    point_weights=None,
 ):
     if len(points) == 0:
         return 1e9
@@ -306,15 +315,24 @@ def grid_thickness_score(
         key_points = points
     xy_keys = np.floor(key_points[:, :2] / resolution).astype(np.int64)
     cells = {}
-    for point, key in zip(points, map(tuple, xy_keys)):
+    cell_weights = {}
+    if point_weights is None:
+        point_weights = np.ones(len(points), dtype=np.float64)
+    else:
+        point_weights = np.asarray(point_weights, dtype=np.float64)
+    for point, weight, key in zip(points, point_weights, map(tuple, xy_keys)):
         cells.setdefault(key, []).append(point)
+        cell_weights.setdefault(key, []).append(float(weight))
 
     weighted_score = 0.0
     total_weight = 0
-    for cell_points in cells.values():
+    for key, cell_points in cells.items():
         cell_points = np.asarray(cell_points, dtype=np.float64)
         count = len(cell_points)
         if count < min_points:
+            continue
+        cell_weight = float(np.sum(cell_weights[key]))
+        if cell_weight <= 0.0:
             continue
 
         if method == "z_std":
@@ -344,8 +362,8 @@ def grid_thickness_score(
             else:
                 thickness = float(np.sqrt(max(eigvals[0] + eigvals[1], 0.0)))
 
-        weighted_score += thickness * count
-        total_weight += count
+        weighted_score += thickness * cell_weight
+        total_weight += cell_weight
 
     if total_weight == 0:
         return 1e9
@@ -369,6 +387,19 @@ def project_points_for_thickness(points, score_projection):
     if projection == "xy":
         return points[:, :2]
     return points
+
+
+def distance_score_weights(ranges, config):
+    if not config or not bool(config.get("enabled", False)):
+        return None
+
+    ranges = np.asarray(ranges, dtype=np.float64)
+    reference_range = max(float(config.get("reference_range", 2.0)), 1e-6)
+    power = float(config.get("power", 1.0))
+    min_weight = float(config.get("min_weight", 0.25))
+    max_weight = float(config.get("max_weight", 4.0))
+    weights = np.power(np.maximum(ranges, 0.0) / reference_range, power)
+    return np.clip(weights, min_weight, max_weight)
 
 
 def parse_weighted_score_metric(score_metric, metric_names, default_weight):
@@ -410,12 +441,17 @@ def initial_scan_overlap_score(
     score_metric,
     thickness_method,
     fixed_grid_pose=None,
+    distance_weight_config=None,
 ):
     clouds = initial_scan_overlap_clouds(chunks, pose, indices)
     target_cloud = clouds["target"]
     source_cloud = clouds["source"]
     if len(target_cloud) == 0 or len(source_cloud) == 0:
         return 1e9
+    point_weights = distance_score_weights(
+        np.concatenate([clouds["target_ranges"], clouds["source_ranges"]]),
+        distance_weight_config,
+    )
 
     score_metric = str(score_metric).strip().lower()
     z_std_weight = parse_weighted_score_metric(
@@ -454,6 +490,7 @@ def initial_scan_overlap_score(
             "pca_line",
             "xy",
             key_points=key_points,
+            point_weights=point_weights,
         )
         if z_std_weight is not None:
             score += z_std_weight * grid_thickness_score(
@@ -463,6 +500,7 @@ def initial_scan_overlap_score(
                 "z_std",
                 "xyz",
                 key_points=key_points,
+                point_weights=point_weights,
             )
         if tilt_weight is not None:
             score += tilt_weight * pose_tilt_penalty(
@@ -497,6 +535,7 @@ def initial_scan_overlap_score(
             thickness_method,
             score_projection,
             key_points=key_points,
+            point_weights=point_weights,
         ))
 
     target_ndt = build_ndt_grid(
@@ -811,6 +850,7 @@ def optimize_initial_overlap_full_grid_stage(
     score_projection,
     score_metric,
     thickness_method,
+    distance_weight_config,
     fixed_grid_pose,
     logger,
     progress_callback,
@@ -861,6 +901,7 @@ def optimize_initial_overlap_full_grid_stage(
                     score_metric,
                     thickness_method,
                     fixed_grid_pose=fixed_grid_pose,
+                    distance_weight_config=distance_weight_config,
                 )
                 improved = update_best_initial_overlap(
                     best,
@@ -902,6 +943,7 @@ def optimize_initial_overlap_axis_sequential_stage(
     score_projection,
     score_metric,
     thickness_method,
+    distance_weight_config,
     fixed_grid_pose,
     logger,
     progress_callback,
@@ -977,6 +1019,7 @@ def optimize_initial_overlap_axis_sequential_stage(
                     score_metric,
                     thickness_method,
                     fixed_grid_pose=fixed_grid_pose,
+                    distance_weight_config=distance_weight_config,
                 )
                 if score < axis_best_score:
                     axis_best_pose = dict(pose)
@@ -1024,6 +1067,7 @@ def optimize_initial_overlap_tilt_yaw_vector_stage(
     score_projection,
     score_metric,
     thickness_method,
+    distance_weight_config,
     fixed_grid_pose,
     logger,
     progress_callback,
@@ -1067,6 +1111,7 @@ def optimize_initial_overlap_tilt_yaw_vector_stage(
                     score_metric,
                     thickness_method,
                     fixed_grid_pose=fixed_grid_pose,
+                    distance_weight_config=distance_weight_config,
                 )
                 improved = update_best_initial_overlap(
                     best,
@@ -1116,6 +1161,7 @@ def optimize_lidar_rpy_by_initial_overlap(
     score_projection,
     score_metric,
     thickness_method,
+    distance_weight_config,
     overlap_stride,
     max_overlap_scans,
     logger,
@@ -1137,6 +1183,7 @@ def optimize_lidar_rpy_by_initial_overlap(
         score_metric,
         thickness_method,
         fixed_grid_pose=fixed_grid_pose,
+        distance_weight_config=distance_weight_config,
     )
     initial_score = float(best["score"])
 
@@ -1168,6 +1215,7 @@ def optimize_lidar_rpy_by_initial_overlap(
                 score_projection,
                 score_metric,
                 thickness_method,
+                distance_weight_config,
                 fixed_grid_pose,
                 logger,
                 progress_callback,
@@ -1187,6 +1235,7 @@ def optimize_lidar_rpy_by_initial_overlap(
                 score_projection,
                 score_metric,
                 thickness_method,
+                distance_weight_config,
                 fixed_grid_pose,
                 logger,
                 progress_callback,
@@ -1206,6 +1255,7 @@ def optimize_lidar_rpy_by_initial_overlap(
                 score_projection,
                 score_metric,
                 thickness_method,
+                distance_weight_config,
                 fixed_grid_pose,
                 logger,
                 progress_callback,
@@ -1264,6 +1314,7 @@ def run_initial_overlap_calibration_for_lidar(
     overlap_score_projection,
     overlap_score_metric,
     overlap_thickness_method,
+    overlap_distance_weight_config,
     overlap_stride,
     max_overlap_scans,
     logger,
@@ -1296,6 +1347,7 @@ def run_initial_overlap_calibration_for_lidar(
         overlap_score_projection,
         overlap_score_metric,
         overlap_thickness_method,
+        overlap_distance_weight_config,
         overlap_stride,
         max_overlap_scans,
         logger,
@@ -1563,6 +1615,7 @@ def calibrate_6dof(
     overlap_thickness_method = str(
         overlap_cfg.get("thickness_method", "pca_line")
     ).strip().lower()
+    overlap_distance_weight_config = overlap_cfg.get("distance_weight")
     overlap_min_score_improvement_ratio = float(
         overlap_cfg.get("min_score_improvement_ratio", 0.0)
     )
@@ -1620,6 +1673,7 @@ def calibrate_6dof(
     result_yaml["score_projection"] = score_projection
     result_yaml["initial_overlap_score_metric"] = overlap_score_metric
     result_yaml["initial_overlap_thickness_method"] = overlap_thickness_method
+    result_yaml["initial_overlap_distance_weight"] = overlap_distance_weight_config
     result_yaml["initial_overlap_score_projection"] = overlap_score_projection
     result_yaml["initial_overlap_enabled"] = overlap_enabled
     result_yaml["reference_score_projection"] = reference_score_projection
@@ -1718,6 +1772,7 @@ def calibrate_6dof(
                 overlap_score_projection,
                 overlap_score_metric,
                 overlap_thickness_method,
+                overlap_distance_weight_config,
                 overlap_stride,
                 max_overlap_scans,
                 logger,
