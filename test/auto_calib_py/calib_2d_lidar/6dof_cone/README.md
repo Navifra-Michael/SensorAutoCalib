@@ -65,6 +65,32 @@ From this folder:
 python3 6dof_cone.py
 ```
 
+### Realtime mode
+
+Realtime is a processing mode, not a plot option:
+
+```yaml
+realtime:
+  enabled: true
+  update_interval_sec: 0.1
+  ransac_iterations: 300
+  plotly_update_interval_sec: 0.1
+  save_final_result: true
+```
+
+It processes only the newest `LaserScan` message from each LiDAR. Frames are
+not accumulated and no temporal median is computed. During realtime operation,
+the local Matplotlib window and the combined Plotly HTML are updated without
+recreating either window, so updates do not require full-window refreshes.
+No PNG or repeated YAML is created. Close the live window or press
+Ctrl+C to stop; the last fully successful result is then written once. Set
+`enabled: false` for the normal collect-and-calibrate workflow.
+
+The LiDAR circle/plane calculations run in separate worker processes, while
+Plotly serialization runs outside the ROS/Matplotlib loop. If rendering is
+still busy, intermediate display frames are dropped instead of queued so the
+next displayed result stays close to the newest scan.
+
 Custom config paths can also be supplied:
 
 ```bash
@@ -79,8 +105,9 @@ Default files are written below `output/`:
 
 - `calibrated_output.yaml`: detected circles, inferred heights, plane, RMSE, and results
 - `calibrated_config.yaml`: input LiDAR config with calibrated roll/pitch/z
-- `cone_calibration.png`: detected circles and fitted center-plane height map
-- `cone_calibration_3d.html`: interactive cones, detected sections, scan points, and plane
+- `cone_calibration.png`: robot-TF XY and fixed-z-range YZ plots in one image
+- `cone_calibration_3d.html`: interactive robot-TF cones, detected sections, scan points, and plane
+- `cone_calibration_3d_combined.html`: all LiDAR results overlaid in one robot-TF 3D scene
 
 Angles in `calibrated_config.yaml` are radians.
 
@@ -89,21 +116,30 @@ The plot window is enabled by default:
 ```yaml
 plot:
   enabled: true
-  show: true
+  show: false
   show_2d: true
   output_png: cone_calibration.png
+  yz_z_min_m: 0.0
+  yz_z_max_m: 2.0
+  yz_z_to_y_scale: 2.0
   interactive_3d: true
   output_html: cone_calibration_3d.html
+  combined_output_html: cone_calibration_3d_combined.html
+  combined_cone_merge_distance_m: 0.6
   max_points: 5000
   dpi: 150
 ```
 
-`show: true` opens the interactive 3D HTML in the default browser. Drag to
+`show: true` opens plot windows and the interactive 3D HTML in the default browser. Drag to
 rotate, use the wheel to zoom, and click legend entries to hide individual
-cones or the scan plane. `show_2d: true` keeps the Matplotlib XY/XZ/YZ window
-open and the program continues only after that window is closed. Set both to
-`false` on a headless computer; PNG and HTML files are still written when
-`enabled: true`.
+cones or the scan plane. `show_2d: true` keeps the Matplotlib XY/YZ window
+open and the program continues only after that window is closed. `show: false`
+suppresses all windows and browser launch while PNG and HTML files are still
+written when `enabled: true`.
+
+`yz_z_min_m` and `yz_z_max_m` fix the vertical robot-z range of the YZ
+projection. `yz_z_to_y_scale: 2.0` makes the displayed horizontal robot-y to
+vertical robot-z unit-length ratio 1:2.
 
 ## Geometric limitation
 

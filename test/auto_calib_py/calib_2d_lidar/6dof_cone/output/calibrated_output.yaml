@@ -1,4 +1,4 @@
-calibration_mode: stationary_cone_circle_plane
+calibration_mode: realtime_newest_scan_cone_circle_plane
 cone:
   radius_m: 0.5
   height_m: 1.0
@@ -6,85 +6,85 @@ success: true
 lidars:
   lidar_1:
     success: true
-    roll_deg: 0.012503042455045332
-    pitch_deg: -0.018374453202128018
-    z_m: 0.2726256913992362
+    roll_deg: 0.01487987777600687
+    pitch_deg: 0.013952132845195553
+    z_m: 0.273058105580378
     plane:
       equation: z = a*x + b*y + c
-      a: 0.00032069471762470874
-      b: 0.0002182192720424081
-      c: 0.2726256913992362
+      a: -0.00024351066063749296
+      b: 0.0002597028730241119
+      c: 0.273058105580378
       normal:
-      - -0.0003206946934980858
-      - -0.00021821925562525557
-      - 0.9999999247676322
-      rmse_m: 1.975656351854947e-16
+      - 0.00024351064520585565
+      - -0.0002597028565663497
+      - 0.999999936628494
+      rmse_m: 5.551115123125783e-17
     range_limited_cluster_count: 3
     extracted_circle_count: 3
     cones:
-    - circle_center_x_m: -0.21220363151945243
-      circle_center_y_m: -4.172163253150946
-      circle_radius_m: 0.36417640380619876
-      inferred_height_m: 0.2716471923876025
-      circle_rmse_m: 0.0011573862027251212
-      inliers: 60
-      cluster_points: 60
-    - circle_center_x_m: 4.029732299229288
-      circle_center_y_m: 0.0707125112933468
-      circle_radius_m: 0.3630332819531103
-      inferred_height_m: 0.2739334360937794
-      circle_rmse_m: 0.0010864512074104321
-      inliers: 62
-      cluster_points: 62
-    - circle_center_x_m: -0.21203592951770056
-      circle_center_y_m: 4.312479087637122
-      circle_radius_m: 0.3632506206780524
-      inferred_height_m: 0.27349875864389517
-      circle_rmse_m: 0.0011195988824898096
-      inliers: 58
-      cluster_points: 58
-    warning: tilted cone sections are not exact circles; validate both RMSE values
-    roll_rad: 0.00021821925735717614
-    pitch_rad: -0.0003206947066307491
-  lidar_2:
-    success: true
-    roll_deg: -2.84540070306123
-    pitch_deg: -2.896144314933955
-    z_m: 0.2717743907445806
-    plane:
-      equation: z = a*x + b*y + c
-      a: 0.05059034778182811
-      b: -0.049766040729561895
-      c: 0.2717743907445806
-      normal:
-      - -0.05046343935768892
-      - 0.04964120012099616
-      - 0.9974914498574612
-      rmse_m: 2.4460626240067963e-16
-    range_limited_cluster_count: 3
-    extracted_circle_count: 3
-    cones:
-    - circle_center_x_m: -0.2089241093396863
-      circle_center_y_m: -4.170537464930417
-      circle_radius_m: 0.26562200763151583
-      inferred_height_m: 0.46875598473696833
-      circle_rmse_m: 0.00116041984551716
+    - circle_center_x_m: -0.9846332470281037
+      circle_center_y_m: -3.3242637448225194
+      circle_radius_m: 0.36378272328618644
+      inferred_height_m: 0.2724345534276271
+      circle_rmse_m: 0.0009423475373846903
+      inliers: 72
+      cluster_points: 72
+    - circle_center_x_m: 2.4130725691447887
+      circle_center_y_m: 1.6214549691548068
+      circle_radius_m: 0.36355420340056593
+      inferred_height_m: 0.27289159319886813
+      circle_rmse_m: 0.0005703288442981402
+      inliers: 86
+      cluster_points: 86
+    - circle_center_x_m: -2.5314401369312782
+      circle_center_y_m: 5.016854466253991
+      circle_radius_m: 0.3625112851205418
+      inferred_height_m: 0.27497742975891637
+      circle_rmse_m: 0.0010399536750216071
       inliers: 44
       cluster_points: 44
-    - circle_center_x_m: 4.027142837256012
-      circle_center_y_m: 0.07812763975156778
-      circle_radius_m: 0.26418957792676057
-      inferred_height_m: 0.47162084414647887
-      circle_rmse_m: 0.0010815481479330086
-      inliers: 45
-      cluster_points: 45
-    - circle_center_x_m: -0.23470501633100976
-      circle_center_y_m: 4.3302404541721495
-      circle_radius_m: 0.47779917023443624
-      inferred_height_m: 0.04440165953112751
-      circle_rmse_m: 0.0012230663052005192
-      inliers: 75
-      cluster_points: 75
     warning: tilted cone sections are not exact circles; validate both RMSE values
-    roll_rad: -0.04966161080697996
-    pitch_rad: -0.05054725390851309
+    roll_rad: 0.00025970285948565116
+    pitch_rad: 0.0002435106558243067
+  lidar_2:
+    success: true
+    roll_deg: -3.981231043087319
+    pitch_deg: -4.053485571776511
+    z_m: 0.2677307525653153
+    plane:
+      equation: z = a*x + b*y + c
+      a: 0.07086493737026749
+      b: -0.06977217281893405
+      c: 0.2677307525653153
+      normal:
+      - -0.07051708846825373
+      - 0.06942968788058762
+      - 0.9950913820724028
+      rmse_m: 1.9821445675202305e-16
+    range_limited_cluster_count: 3
+    extracted_circle_count: 3
+    cones:
+    - circle_center_x_m: 2.1331766315919687
+      circle_center_y_m: -4.884564273695031
+      circle_radius_m: 0.1201475781938805
+      inferred_height_m: 0.759704843612239
+      circle_rmse_m: 0.0011213581411660578
+      inliers: 15
+      cluster_points: 15
+    - circle_center_x_m: 5.510771219759026
+      circle_center_y_m: 0.07578672829042339
+      circle_radius_m: 0.17351829739412494
+      inferred_height_m: 0.6529634052117501
+      circle_rmse_m: 0.001402630869791529
+      inliers: 21
+      cluster_points: 21
+    - circle_center_x_m: 0.5295194571304889
+      circle_center_y_m: 3.4923347916896597
+      circle_radius_m: 0.4692063354480706
+      inferred_height_m: 0.06158732910385878
+      circle_rmse_m: 0.0009724365350649289
+      inliers: 91
+      cluster_points: 91
+    warning: tilted cone sections are not exact circles; validate both RMSE values
+    roll_rad: -0.06948558998448194
+    pitch_rad: -0.07074666940958504

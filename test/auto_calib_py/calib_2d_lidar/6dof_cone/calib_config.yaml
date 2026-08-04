@@ -1,5 +1,21 @@
 collect_duration_sec: 5.0
 
+# Processing mode. Realtime uses only the newest LaserScan frame; it does not
+# accumulate scans or compute a temporal median. Close the window or press
+# Ctrl+C to stop.
+realtime:
+  enabled: true
+  update_interval_sec: 0.1
+  # Faster single-frame RANSAC for realtime display. The normal stationary
+  # mode continues to use circle.ransac_iterations below.
+  ransac_iterations: 300
+  # Local Matplotlib updates on every result; heavier Plotly 3D updates at
+  # this independent rate.
+  plotly_update_interval_sec: 0.1
+  # Do not write results while running. On exit, only the last fully successful
+  # calibration is written to output_yaml and calibrated_config_yaml.
+  save_final_result: true
+
 output_dir: output
 output_yaml: calibrated_output.yaml
 calibrated_config_yaml: calibrated_config.yaml
@@ -40,11 +56,20 @@ quality:
 plot:
   enabled: true
   # Opens the interactive 3D HTML plot in the default browser.
+  # false: save PNG/HTML only, without opening windows or a browser.
   show: true
   # The Matplotlib PNG is saved for diagnostics; normally do not open it.
   show_2d: true
   output_png: cone_calibration.png
+  # Vertical robot-z limits of the YZ projection.
+  yz_z_min_m: 0.0
+  yz_z_max_m: 2.0
+  # Displayed unit-length ratio: horizontal robot-y : vertical robot-z = 1 : 2.
+  yz_z_to_y_scale: 2.0
   interactive_3d: true
   output_html: cone_calibration_3d.html
+  combined_output_html: cone_calibration_3d_combined.html
+  # Robot-frame XY distance used to merge detections of the same physical cone.
+  combined_cone_merge_distance_m: 0.6
   max_points: 5000
   dpi: 150
