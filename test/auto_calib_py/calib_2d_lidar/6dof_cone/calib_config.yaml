@@ -1,0 +1,50 @@
+collect_duration_sec: 5.0
+
+output_dir: output
+output_yaml: calibrated_output.yaml
+calibrated_config_yaml: calibrated_config.yaml
+
+# Physical dimensions of every calibration cone.
+cone:
+  radius_m: 0.5
+  height_m: 1.0
+
+# Only returns in this radial distance interval are considered.
+range_filter:
+  min_m: 0.5
+  max_m: 7.0
+
+# Consecutive LaserScan points are split into object candidates.
+clustering:
+  gap_m: 0.08
+  min_points: 10
+  # Must exceed the visible arc chord. For radius 0.5 m and a 90-degree arc,
+  # the chord is about 0.707 m; 1.2 m allows the full 1.0 m cone diameter.
+  max_width_m: 1.20
+
+# Circle extraction from each object candidate.
+circle:
+  min_radius_m: 0.015
+  inlier_threshold_m: 0.01
+  min_inliers: 5
+  ransac_iterations: 500
+  random_seed: 0
+
+# A plane requires at least three non-collinear cone centers.
+quality:
+  min_cones: 3
+  max_circle_rmse_m: 0.01
+  max_plane_rmse_m: 0.02
+
+# Visualize each LiDAR's scan/circles and inferred 3D center plane.
+plot:
+  enabled: true
+  # Opens the interactive 3D HTML plot in the default browser.
+  show: true
+  # The Matplotlib PNG is saved for diagnostics; normally do not open it.
+  show_2d: true
+  output_png: cone_calibration.png
+  interactive_3d: true
+  output_html: cone_calibration_3d.html
+  max_points: 5000
+  dpi: 150

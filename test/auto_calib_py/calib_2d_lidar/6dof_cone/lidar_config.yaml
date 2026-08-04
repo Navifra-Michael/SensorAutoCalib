@@ -1,0 +1,25 @@
+topics:
+  lidar_1: /navi_robot_1/front_scan
+  lidar_2: /navi_robot_1/rear_scan
+
+topic_types:
+  lidar_1: LaserScan
+  lidar_2: LaserScan
+
+# Initial mounting poses. Cone calibration updates only z, roll, and pitch.
+# x, y, yaw are preserved because they are not observable with this method.
+lidars:
+  lidar_1:
+    x: 0.2
+    y: 0.1
+    z: 0.225
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+  lidar_2:
+    x: -0.2
+    y: -0.1
+    z: 0.225
+    roll: 0.0
+    pitch: 0.0
+    yaw: 3.14159
