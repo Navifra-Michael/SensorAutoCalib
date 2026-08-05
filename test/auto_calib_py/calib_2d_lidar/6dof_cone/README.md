@@ -75,6 +75,9 @@ realtime:
   update_interval_sec: 0.1
   ransac_iterations: 300
   plotly_update_interval_sec: 0.1
+  plotly_host: 0.0.0.0
+  plotly_port: 8050
+  plotly_public_host: localhost
   save_final_result: true
 ```
 
@@ -82,6 +85,10 @@ It processes only the newest `LaserScan` message from each LiDAR. Frames are
 not accumulated and no temporal median is computed. During realtime operation,
 the local Matplotlib window and the combined Plotly HTML are updated without
 recreating either window, so updates do not require full-window refreshes.
+The Plotly viewer does not launch a browser; open the URL printed in the
+terminal (`http://localhost:8050/realtime_cone_calibration.html` by default).
+For Docker, publish the port with `-p 8050:8050`, or add
+`ports: ["8050:8050"]` to the Compose service.
 No PNG or repeated YAML is created. Close the live window or press
 Ctrl+C to stop; the last fully successful result is then written once. Set
 `enabled: false` for the normal collect-and-calibrate workflow.

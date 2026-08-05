@@ -25,7 +25,6 @@ import signal
 import sys
 import threading
 import time
-import webbrowser
 import warnings
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -953,7 +952,13 @@ class _QuietHttpHandler(SimpleHTTPRequestHandler):
         pass
 
 
-def start_realtime_plotly_server(output_dir: Path, interval: float):
+def start_realtime_plotly_server(
+    output_dir: Path,
+    interval: float,
+    host: str = "0.0.0.0",
+    port: int = 8050,
+    public_host: str = "localhost",
+):
     """Serve one stable Plotly page whose traces update without page reloads."""
     try:
         from plotly.offline import get_plotlyjs
@@ -974,12 +979,11 @@ def start_realtime_plotly_server(output_dir: Path, interval: float):
         encoding="utf-8",
     )
     handler = partial(_QuietHttpHandler, directory=str(output_dir))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = ThreadingHTTPServer((host, port), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    url = f"http://127.0.0.1:{server.server_port}/{page_path.name}"
-    webbrowser.open(url)
-    print(f"realtime Plotly: {url}")
+    url = f"http://{public_host}:{server.server_port}/{page_path.name}"
+    print(f"realtime Plotly URL: {url}", flush=True)
     return server, output_dir / state_name, page_path
 
 
@@ -1420,6 +1424,11 @@ def run_realtime(
     plotly_interval = float(realtime_cfg.get("plotly_update_interval_sec", 0.5))
     if plotly_interval <= 0.0:
         raise ValueError("realtime.plotly_update_interval_sec must be positive")
+    plotly_host = str(realtime_cfg.get("plotly_host", "0.0.0.0"))
+    plotly_port = int(realtime_cfg.get("plotly_port", 8050))
+    plotly_public_host = str(realtime_cfg.get("plotly_public_host", "localhost"))
+    if not 0 <= plotly_port <= 65535:
+        raise ValueError("realtime.plotly_port must be between 0 and 65535")
     processing_config = copy.deepcopy(calib_config)
     realtime_ransac_iterations = int(
         realtime_cfg.get(
@@ -1474,7 +1483,11 @@ def run_realtime(
     viewer = local_plot.figure
     if bool(calib_config.get("plot", {}).get("interactive_3d", True)):
         plotly_server, plotly_state_path, _ = start_realtime_plotly_server(
-            output_dir, interval
+            output_dir,
+            plotly_interval,
+            host=plotly_host,
+            port=plotly_port,
+            public_host=plotly_public_host,
         )
     next_update = time.monotonic()
     next_plotly_update = next_update

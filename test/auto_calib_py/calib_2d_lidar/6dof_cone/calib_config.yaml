@@ -12,6 +12,12 @@ realtime:
   # Local Matplotlib updates on every result; heavier Plotly 3D updates at
   # this independent rate.
   plotly_update_interval_sec: 0.1
+  # Listen on every interface so the page is reachable through Docker port
+  # forwarding (for example: docker run -p 8050:8050 ...).
+  plotly_host: 0.0.0.0
+  plotly_port: 8050
+  # Hostname printed in the URL for the browser running on the Docker host.
+  plotly_public_host: localhost
   # Do not write results while running. On exit, only the last fully successful
   # calibration is written to output_yaml and calibrated_config_yaml.
   save_final_result: true
