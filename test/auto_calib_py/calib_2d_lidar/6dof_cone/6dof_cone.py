@@ -25,6 +25,7 @@ import signal
 import sys
 import threading
 import time
+import webbrowser
 import warnings
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -958,6 +959,7 @@ def start_realtime_plotly_server(
     host: str = "0.0.0.0",
     port: int = 8050,
     public_host: str = "localhost",
+    auto_open: bool = False,
 ):
     """Serve one stable Plotly page whose traces update without page reloads."""
     try:
@@ -984,6 +986,12 @@ def start_realtime_plotly_server(
     thread.start()
     url = f"http://{public_host}:{server.server_port}/{page_path.name}"
     print(f"realtime Plotly URL: {url}", flush=True)
+    if auto_open and not webbrowser.open(url):
+        print(
+            f"warning: could not open a browser; open {url} manually",
+            file=sys.stderr,
+            flush=True,
+        )
     return server, output_dir / state_name, page_path
 
 
@@ -1488,6 +1496,7 @@ def run_realtime(
             host=plotly_host,
             port=plotly_port,
             public_host=plotly_public_host,
+            auto_open=bool(calib_config.get("plot", {}).get("show", True)),
         )
     next_update = time.monotonic()
     next_plotly_update = next_update

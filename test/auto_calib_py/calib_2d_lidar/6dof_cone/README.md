@@ -85,8 +85,10 @@ It processes only the newest `LaserScan` message from each LiDAR. Frames are
 not accumulated and no temporal median is computed. During realtime operation,
 the local Matplotlib window and the combined Plotly HTML are updated without
 recreating either window, so updates do not require full-window refreshes.
-The Plotly viewer does not launch a browser; open the URL printed in the
+With `plot.show: true`, the Plotly viewer launches the URL printed in the
 terminal (`http://localhost:8050/realtime_cone_calibration.html` by default).
+If no browser is available (for example, in a headless container), open that
+URL manually on the host. Set `plot.show: false` to disable browser launch.
 For Docker, publish the port with `-p 8050:8050`, or add
 `ports: ["8050:8050"]` to the Compose service.
 No PNG or repeated YAML is created. Close the live window or press
