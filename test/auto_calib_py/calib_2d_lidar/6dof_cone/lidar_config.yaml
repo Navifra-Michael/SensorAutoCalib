@@ -1,8 +1,8 @@
 topics:
-  # lidar_1: /navi_robot_1/front_scan
-  # lidar_2: /navi_robot_1/rear_scan
-  lidar_1: /scan_front
-  lidar_2: /scan_rear
+  lidar_1: /navi_robot_1/front_scan
+  lidar_2: /navi_robot_1/rear_scan
+  # lidar_1: /scan_front
+  # lidar_2: /scan_rear
 
 topic_types:
   lidar_1: LaserScan

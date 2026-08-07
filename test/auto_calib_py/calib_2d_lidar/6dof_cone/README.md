@@ -53,6 +53,7 @@ The most useful detection tuning parameters are:
 - `clustering.gap_m`: distance that separates adjacent scan objects
 - `range_filter.min_m/max_m`: robot-origin XY detection-distance limits
 - `clustering.max_width_m`: rejects clusters wider than a cone
+- `circle.min_radius_m/max_radius_m`: accepted circle-radius limits
 - `circle.inlier_threshold_m`: maximum radial error of a circle inlier
 - `circle.min_inliers`: minimum scan points required for a circle
 - `circle.min_inlier_ratio`: minimum fraction of a cluster that must fit the circle

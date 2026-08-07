@@ -405,6 +405,7 @@ def extract_sections(
     cone_radius: float,
     cone_height: float,
     min_circle_radius: float,
+    max_circle_radius: float,
     circle_threshold: float,
     ransac_iterations: int,
     min_inliers: int,
@@ -416,7 +417,7 @@ def extract_sections(
     sections = []
     for index, cluster in enumerate(clusters, 1):
         circle = fit_circle_ransac(
-            cluster, min_circle_radius, cone_radius * 1.05,
+            cluster, min_circle_radius, max_circle_radius,
             circle_threshold, ransac_iterations, min_inliers, min_inlier_ratio, rng,
         )
         if circle is None:
@@ -425,8 +426,8 @@ def extract_sections(
                     f"cluster {index}: rejected by circle RANSAC ({len(cluster)} points)"
                 )
             continue
-        # The RANSAC model already limits the radius to 1.05*R. Clamp the
-        # small tolerance band to the cone base instead of rejecting it.
+        # A configured maximum may include a small tolerance above the physical
+        # cone base. Clamp that tolerance when converting radius to height.
         effective_radius = min(circle.radius, cone_radius)
         height = cone_height * (1.0 - effective_radius / cone_radius)
         sections.append(ConeSection(circle, float(height)))
@@ -754,6 +755,7 @@ def plot_calibration_3d(
     calib_config: dict,
     lidar_poses: dict,
     save_path: Path,
+    auto_open: bool | None = None,
 ) -> None:
     """Create an interactive Plotly view of cones and the LiDAR scan plane."""
     try:
@@ -886,7 +888,7 @@ def plot_calibration_3d(
         margin={"l": 20, "r": 20, "t": 80, "b": 20},
     )
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    show = bool(calib_config.get("plot", {}).get("show", True))
+    show = bool(calib_config.get("plot", {}).get("show", True)) if auto_open is None else auto_open
     figure.write_html(str(save_path), include_plotlyjs=True, auto_open=show)
     print(f"interactive 3D plot: {save_path}")
 
@@ -1031,6 +1033,34 @@ def plot_combined_calibration_3d(
 class _QuietHttpHandler(SimpleHTTPRequestHandler):
     def log_message(self, _format, *_args):
         pass
+
+
+def start_static_plotly_server(
+    output_dir: Path,
+    page_paths: Sequence[Path],
+    host: str = "0.0.0.0",
+    port: int = 8050,
+    public_host: str = "localhost",
+    auto_open: bool = False,
+):
+    """Serve stationary Plotly files through HTTP for Docker-host browsers."""
+    handler = partial(_QuietHttpHandler, directory=str(output_dir))
+    server = ThreadingHTTPServer((host, port), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    urls = [
+        f"http://{public_host}:{server.server_port}/{path.name}"
+        for path in page_paths
+    ]
+    for url in urls:
+        print(f"Plotly URL: {url}", flush=True)
+    if auto_open and urls and not webbrowser.open(urls[-1]):
+        print(
+            f"warning: could not open a browser; open {urls[-1]} manually",
+            file=sys.stderr,
+            flush=True,
+        )
+    return server
 
 
 def start_realtime_plotly_server(
@@ -1486,9 +1516,16 @@ def process_lidar(
     min_inlier_ratio = float(circle_cfg.get("min_inlier_ratio", 0.7))
     if not 0.0 <= min_inlier_ratio <= 1.0:
         raise ValueError("circle.min_inlier_ratio must be between 0 and 1")
+    min_circle_radius = float(circle_cfg.get("min_radius_m", 0.015))
+    max_circle_radius = float(circle_cfg.get("max_radius_m", radius * 1.05))
+    if not 0.0 < min_circle_radius <= max_circle_radius:
+        raise ValueError(
+            "circle radius limits must satisfy 0 < min_radius_m <= max_radius_m"
+        )
     sections = extract_sections(
         clusters, radius, height,
-        float(circle_cfg.get("min_radius_m", 0.015)),
+        min_circle_radius,
+        max_circle_radius,
         float(circle_cfg.get("inlier_threshold_m", 0.01)),
         int(circle_cfg.get("ransac_iterations", 500)),
         int(circle_cfg.get("min_inliers", 5)),
@@ -1809,6 +1846,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(f"calibrated config: {calibrated_path}")
     plot_cfg = calib_config.get("plot", {})
     if bool(plot_cfg.get("enabled", True)):
+        plotly_server = None
         # Open/write the non-blocking browser plot first. The Matplotlib plot
         # is intentionally last because plt.show() keeps the process alive
         # until the user closes its window.
@@ -1817,19 +1855,38 @@ def main(argv: Iterable[str] | None = None) -> int:
                 plot_cfg.get("output_html", "cone_calibration_3d.html")
             )
             plot_calibration_3d(
-                scans, output["lidars"], calib_config, calibrated_config["lidars"], html_path
+                scans, output["lidars"], calib_config, calibrated_config["lidars"], html_path,
+                auto_open=False,
             )
             combined_html_path = output_dir / str(
                 plot_cfg.get("combined_output_html", "cone_calibration_3d_combined.html")
             )
             plot_combined_calibration_3d(
                 scans, output["lidars"], calib_config, calibrated_config["lidars"],
-                combined_html_path,
+                combined_html_path, auto_open=False,
             )
+            pages = [path for path in (html_path, combined_html_path) if path.is_file()]
+            if pages:
+                realtime_cfg = calib_config.get("realtime", {})
+                plotly_host = str(realtime_cfg.get("plotly_host", "0.0.0.0"))
+                plotly_port = int(realtime_cfg.get("plotly_port", 8050))
+                plotly_public_host = str(realtime_cfg.get("plotly_public_host", "localhost"))
+                if not 0 <= plotly_port <= 65535:
+                    raise ValueError("realtime.plotly_port must be between 0 and 65535")
+                plotly_server = start_static_plotly_server(
+                    output_dir, pages, host=plotly_host, port=plotly_port,
+                    public_host=plotly_public_host,
+                    auto_open=bool(plot_cfg.get("show", True)),
+                )
         plot_path = output_dir / str(plot_cfg.get("output_png", "cone_calibration.png"))
-        plot_calibration(
-            scans, output["lidars"], calib_config, calibrated_config["lidars"], plot_path
-        )
+        try:
+            plot_calibration(
+                scans, output["lidars"], calib_config, calibrated_config["lidars"], plot_path
+            )
+        finally:
+            if plotly_server is not None:
+                plotly_server.shutdown()
+                plotly_server.server_close()
     return 0 if output["success"] else 1
 
 

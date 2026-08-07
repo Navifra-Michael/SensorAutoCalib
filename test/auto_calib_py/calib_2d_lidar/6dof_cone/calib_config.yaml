@@ -11,7 +11,7 @@ temporal_median:
 # every finite point received during collect_duration_sec is accumulated.
 # Close the window or press Ctrl+C to stop realtime mode.
 realtime:
-  enabled: false
+  enabled: true
   update_interval_sec: 0.1
   # Faster single-frame RANSAC for realtime display. The normal stationary
   # mode continues to use circle.ransac_iterations below.
@@ -35,13 +35,14 @@ calibrated_config_yaml: calibrated_config.yaml
 
 # Physical dimensions of every calibration cone.
 cone:
-  radius_m: 0.125
-  height_m: 0.77
-
+  # radius_m: 0.125
+  # height_m: 0.77
+  radius_m: 0.5
+  height_m: 0.5
 # Only returns in this robot-origin XY distance interval are considered.
 range_filter:
   min_m: 1.0
-  max_m: 4.0
+  max_m: 5.0
 
 # Consecutive LaserScan points are split into object candidates.
 clustering:
@@ -54,8 +55,9 @@ clustering:
 # Circle extraction from each object candidate.
 circle:
   min_radius_m: 0.05
+  max_radius_m: 0.5
   inlier_threshold_m: 0.01
-  min_inliers: 15
+  min_inliers: 10
   # Prevent a few points inside a larger object cluster from being accepted.
   min_inlier_ratio: 0.9
   ransac_iterations: 500
