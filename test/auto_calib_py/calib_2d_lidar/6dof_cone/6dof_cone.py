@@ -26,7 +26,6 @@ import sys
 import threading
 import time
 import webbrowser
-import warnings
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
@@ -124,8 +123,72 @@ def load_offline(path: Path, polar: bool) -> np.ndarray:
     return data
 
 
+def accumulate_scan_frames(
+    frames: Sequence[Tuple[np.ndarray, float, float]],
+) -> np.ndarray:
+    """Accumulate every finite return and preserve LaserScan angular order."""
+    angle_parts = []
+    point_parts = []
+    for ranges, angle_min, angle_increment in frames:
+        angles = angle_min + np.arange(len(ranges)) * angle_increment
+        valid = np.isfinite(ranges)
+        valid_ranges = ranges[valid]
+        valid_angles = angles[valid]
+        angle_parts.append(valid_angles)
+        point_parts.append(np.column_stack((
+            valid_ranges * np.cos(valid_angles),
+            valid_ranges * np.sin(valid_angles),
+        )))
+    if not point_parts or not any(len(part) for part in point_parts):
+        return np.empty((0, 2), dtype=float)
+    all_angles = np.concatenate(angle_parts)
+    all_points = np.vstack(point_parts)
+    return all_points[np.argsort(all_angles, kind="stable")]
+
+
+def median_scan_frames(
+    frames: Sequence[Tuple[np.ndarray, float, float]],
+    min_valid_frames: int = 1,
+) -> np.ndarray:
+    """Return one point per beam using its median range across scan frames."""
+    if min_valid_frames < 1:
+        raise ValueError("temporal_median.min_valid_frames must be at least 1")
+    if not frames:
+        return np.empty((0, 2), dtype=float)
+
+    reference_ranges, angle_min, angle_increment = frames[0]
+    beam_count = len(reference_ranges)
+    range_rows = []
+    for ranges, frame_angle_min, frame_angle_increment in frames:
+        if (
+            len(ranges) != beam_count
+            or not np.isclose(frame_angle_min, angle_min)
+            or not np.isclose(frame_angle_increment, angle_increment)
+        ):
+            raise ValueError(
+                "LaserScan geometry changed during temporal median collection"
+            )
+        range_rows.append(np.asarray(ranges, dtype=float))
+
+    range_matrix = np.vstack(range_rows)
+    finite = np.isfinite(range_matrix)
+    valid_beams = np.count_nonzero(finite, axis=0) >= min_valid_frames
+    if not np.any(valid_beams):
+        return np.empty((0, 2), dtype=float)
+
+    selected = range_matrix[:, valid_beams]
+    selected[~finite[:, valid_beams]] = np.nan
+    median_ranges = np.nanmedian(selected, axis=0)
+    beam_indices = np.flatnonzero(valid_beams)
+    angles = angle_min + beam_indices * angle_increment
+    return np.column_stack((
+        median_ranges * np.cos(angles),
+        median_ranges * np.sin(angles),
+    ))
+
+
 def collect_ros_scan(topic: str, duration: float) -> np.ndarray:
-    """Collect stationary scans and return one angle-ordered median scan."""
+    """Collect and accumulate stationary scans in angle order."""
     try:
         import rclpy
         from sensor_msgs.msg import LaserScan
@@ -152,17 +215,17 @@ def collect_ros_scan(topic: str, duration: float) -> np.ndarray:
     if not frames:
         raise RuntimeError(f"no LaserScan received from {topic}")
 
-    length = min(len(frame[0]) for frame in frames)
-    ranges = np.vstack([frame[0][:length] for frame in frames])
-    ranges[~np.isfinite(ranges)] = np.nan
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        median = np.nanmedian(ranges, axis=0)
-    angles = frames[-1][1] + np.arange(length) * frames[-1][2]
-    return np.column_stack((median * np.cos(angles), median * np.sin(angles)))
+    points = accumulate_scan_frames(frames)
+    print(f"  accumulated {len(points)} points from {len(frames)} scans")
+    return points
 
 
-def collect_ros_scans(topics: dict, duration: float) -> dict:
+def collect_ros_scans(
+    topics: dict,
+    duration: float,
+    temporal_median_enabled: bool = False,
+    temporal_median_min_valid_frames: int = 1,
+) -> dict:
     """Collect all configured LaserScan topics during one stationary interval."""
     try:
         import rclpy
@@ -197,15 +260,18 @@ def collect_ros_scans(topics: dict, duration: float) -> dict:
         if not lidar_frames:
             print(f"warning: no LaserScan received for {name} ({topics[name]})", file=sys.stderr)
             continue
-        length = min(len(frame[0]) for frame in lidar_frames)
-        ranges = np.vstack([frame[0][:length] for frame in lidar_frames])
-        ranges[~np.isfinite(ranges)] = np.nan
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            median = np.nanmedian(ranges, axis=0)
-        angles = lidar_frames[-1][1] + np.arange(length) * lidar_frames[-1][2]
-        result[name] = np.column_stack((median * np.cos(angles), median * np.sin(angles)))
-        print(f"  {name}: {len(lidar_frames)} scans")
+        if temporal_median_enabled:
+            result[name] = median_scan_frames(
+                lidar_frames, temporal_median_min_valid_frames
+            )
+            processing_description = "median-filtered points"
+        else:
+            result[name] = accumulate_scan_frames(lidar_frames)
+            processing_description = "accumulated points"
+        print(
+            f"  {name}: {len(lidar_frames)} scans, "
+            f"{len(result[name])} {processing_description}"
+        )
     return result
 
 
@@ -216,9 +282,13 @@ def filter_and_cluster(
     cluster_gap: float,
     min_points: int,
     max_width: float,
+    range_points: np.ndarray | None = None,
 ) -> List[np.ndarray]:
-    """Apply range limits, then split angle-ordered points at discontinuities."""
-    ranges = np.linalg.norm(points, axis=1)
+    """Apply robot-XY range limits, then split angle-ordered scan points."""
+    distance_points = points if range_points is None else range_points
+    if len(distance_points) != len(points):
+        raise ValueError("range_points and points must have the same length")
+    ranges = np.linalg.norm(distance_points, axis=1)
     valid = (
         np.isfinite(points).all(axis=1)
         & (ranges >= min_range)
@@ -290,9 +360,11 @@ def fit_circle_ransac(
     threshold: float,
     iterations: int,
     min_inliers: int,
+    min_inlier_ratio: float,
     rng: np.random.Generator,
 ) -> Circle | None:
-    if len(points) < max(3, min_inliers):
+    required_inliers = max(min_inliers, math.ceil(len(points) * min_inlier_ratio))
+    if len(points) < max(3, required_inliers):
         return None
     best_indices = np.empty(0, dtype=int)
     best_error = float("inf")
@@ -311,14 +383,14 @@ def fit_circle_ransac(
         ):
             best_indices, best_error = indices, error
 
-    if len(best_indices) < min_inliers:
+    if len(best_indices) < required_inliers:
         return None
     center, radius, _ = refine_circle(points[best_indices])
     if not min_radius <= radius <= max_radius:
         return None
     residual = np.abs(np.linalg.norm(points - center, axis=1) - radius)
     inliers = residual <= threshold
-    if np.count_nonzero(inliers) >= min_inliers:
+    if np.count_nonzero(inliers) >= required_inliers:
         center, radius, rmse = refine_circle(points[inliers])
     else:
         return None
@@ -336,6 +408,7 @@ def extract_sections(
     circle_threshold: float,
     ransac_iterations: int,
     min_inliers: int,
+    min_inlier_ratio: float,
     seed: int,
     diagnostics: List[str] | None = None,
 ) -> List[ConeSection]:
@@ -344,7 +417,7 @@ def extract_sections(
     for index, cluster in enumerate(clusters, 1):
         circle = fit_circle_ransac(
             cluster, min_circle_radius, cone_radius * 1.05,
-            circle_threshold, ransac_iterations, min_inliers, rng,
+            circle_threshold, ransac_iterations, min_inliers, min_inlier_ratio, rng,
         )
         if circle is None:
             if diagnostics is not None:
@@ -409,6 +482,8 @@ def result_dict(
 ) -> dict:
     return {
         "success": True,
+        "roll_rad": plane.roll,
+        "pitch_rad": plane.pitch,
         "roll_deg": math.degrees(plane.roll),
         "pitch_deg": math.degrees(plane.pitch),
         "z_m": plane.c,
@@ -451,7 +526,7 @@ def plot_calibration(
         if not bool(plot_cfg.get("show", True)):
             matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.patches import Polygon
+        from matplotlib.patches import Circle as MplCircle, Polygon
     except ImportError:
         print("warning: matplotlib is not installed; GUI plot skipped", file=sys.stderr)
         return
@@ -487,18 +562,18 @@ def plot_calibration(
         result = lidar_results[name]
         pose = lidar_poses[name]
         points = scans[name]
-        ranges = np.linalg.norm(points, axis=1)
+        all_robot = transform_to_robot(
+            np.column_stack((points, np.zeros(len(points)))), pose
+        )
+        ranges = np.linalg.norm(all_robot[:, :2], axis=1)
         valid = (
             np.isfinite(points).all(axis=1)
             & (ranges >= min_range) & (ranges <= max_range)
         )
-        filtered = points[valid]
-        if len(filtered) > max_points:
-            indices = np.linspace(0, len(filtered) - 1, max_points).astype(int)
-            filtered = filtered[indices]
-        filtered_robot = transform_to_robot(
-            np.column_stack((filtered, np.zeros(len(filtered)))), pose
-        )
+        filtered_robot = all_robot[valid]
+        if len(filtered_robot) > max_points:
+            indices = np.linspace(0, len(filtered_robot) - 1, max_points).astype(int)
+            filtered_robot = filtered_robot[indices]
         cones = result.get("cones", [])
         colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(len(cones), 1)))
 
@@ -506,7 +581,6 @@ def plot_calibration(
         ax_xy = axes[row, 0]
         # Scale XY from detected cones, not raw scan outliers. Scan points are
         # still drawn, but they must not expand the diagnostic view.
-        xy_bounds_points = []
         ax_xy.scatter(filtered_robot[:, 0], filtered_robot[:, 1], s=5, c="0.55",
                       label="range-filtered scan")
         for index, (cone, color) in enumerate(zip(cones, colors), 1):
@@ -519,30 +593,35 @@ def plot_calibration(
                 np.zeros_like(theta),
             ))
             ring_robot = transform_to_robot(ring_local, pose)
-            xy_bounds_points.append(ring_robot[:, :2])
             center_robot = transform_to_robot(np.array(((cx, cy, 0.0),)), pose)[0]
             ax_xy.plot(ring_robot[:, 0], ring_robot[:, 1], color=color, linewidth=2)
             ax_xy.scatter(center_robot[0], center_robot[1], marker="x", s=55, color=color)
             ax_xy.annotate(f"C{index}\nr={radius:.3f}", center_robot[:2], color=color)
         ax_xy.scatter(float(pose.get("x", 0.0)), float(pose.get("y", 0.0)),
                       marker="^", s=80, c="red", label="LiDAR")
-        ax_xy.scatter(0.0, 0.0, marker="+", s=90, c="black", label="robot origin")
+        ax_xy.scatter(0.0, 0.0, marker="o", s=55, c="black", label="robot (0, 0)", zorder=6)
+        axis_length = min(max(0.25, 0.12 * max_range), 1.0)
+        ax_xy.arrow(0.0, 0.0, axis_length, 0.0, color="tab:red", width=0.008,
+                    head_width=0.08, length_includes_head=True, zorder=5)
+        ax_xy.arrow(0.0, 0.0, 0.0, axis_length, color="tab:green", width=0.008,
+                    head_width=0.08, length_includes_head=True, zorder=5)
+        ax_xy.annotate("robot +x", (axis_length, 0.0), color="tab:red")
+        ax_xy.annotate("robot +y", (0.0, axis_length), color="tab:green")
+        ax_xy.add_patch(MplCircle(
+            (0.0, 0.0), max_range, fill=False, linestyle="--", linewidth=1.5,
+            color="tab:orange", label=f"max range {max_range:g} m",
+        ))
+        if min_range > 0.0:
+            ax_xy.add_patch(MplCircle(
+                (0.0, 0.0), min_range, fill=False, linestyle=":", linewidth=1.5,
+                color="tab:purple", label=f"min range {min_range:g} m",
+            ))
         ax_xy.set_title(f"{name}: circles in robot TF (XY)")
         ax_xy.set_xlabel("robot x [m]")
         ax_xy.set_ylabel("robot y [m]")
-        if xy_bounds_points:
-            all_xy = np.vstack(xy_bounds_points)
-        else:
-            lidar_xy = (float(pose.get("x", 0.0)), float(pose.get("y", 0.0)))
-            all_xy = np.array((lidar_xy, lidar_xy))
-        x_min, y_min = np.min(all_xy, axis=0)
-        x_max, y_max = np.max(all_xy, axis=0)
-        equal_span = max(float(x_max - x_min), float(y_max - y_min), 2.0 * cone_radius)
-        equal_span *= 1.08
-        x_mid = 0.5 * float(x_min + x_max)
-        y_mid = 0.5 * float(y_min + y_max)
-        ax_xy.set_xlim(x_mid - 0.5 * equal_span, x_mid + 0.5 * equal_span)
-        ax_xy.set_ylim(y_mid - 0.5 * equal_span, y_mid + 0.5 * equal_span)
+        plot_limit = 1.03 * max_range
+        ax_xy.set_xlim(-plot_limit, plot_limit)
+        ax_xy.set_ylim(-plot_limit, plot_limit)
         ax_xy.set_aspect("equal", adjustable="box")
         ax_xy.grid(True, alpha=0.3)
         ax_xy.legend(loc="best", fontsize=8)
@@ -633,7 +712,8 @@ def plot_calibration(
             axis.set_aspect(yz_z_to_y_scale, adjustable="box")
             axis.set_title(
                 f"{name}: {projection} projection\n"
-                f"roll={result['roll_deg']:.3f}°, pitch={result['pitch_deg']:.3f}°, "
+                f"roll={result['roll_deg']:.3f}° ({result['roll_rad']:.4f} rad), "
+                f"pitch={result['pitch_deg']:.3f}° ({result['pitch_rad']:.4f} rad), "
                 f"z={result['z_m']:.3f} m"
             )
             axis.grid(True, alpha=0.3)
@@ -770,15 +850,15 @@ def plot_calibration_3d(
         )
 
         points = scans[name]
-        ranges = np.linalg.norm(points, axis=1)
-        valid = np.isfinite(points).all(axis=1) & (ranges >= min_range) & (ranges <= max_range)
-        scan_points = points[valid]
-        if len(scan_points) > max_points:
-            selected = np.linspace(0, len(scan_points) - 1, max_points).astype(int)
-            scan_points = scan_points[selected]
-        scan_robot = transform_to_robot(
-            np.column_stack((scan_points, np.zeros(len(scan_points)))), pose
+        all_scan_robot = transform_to_robot(
+            np.column_stack((points, np.zeros(len(points)))), pose
         )
+        ranges = np.linalg.norm(all_scan_robot[:, :2], axis=1)
+        valid = np.isfinite(points).all(axis=1) & (ranges >= min_range) & (ranges <= max_range)
+        scan_robot = all_scan_robot[valid]
+        if len(scan_robot) > max_points:
+            selected = np.linspace(0, len(scan_robot) - 1, max_points).astype(int)
+            scan_robot = scan_robot[selected]
         figure.add_trace(
             go.Scatter3d(
                 x=scan_robot[:, 0], y=scan_robot[:, 1], z=scan_robot[:, 2],
@@ -1019,12 +1099,15 @@ class RealtimeLocalPlot:
     def __init__(self, names: Sequence[str], config: dict):
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection
+        from matplotlib.patches import Circle as MplCircle
 
         self.plt = plt
         self.names = list(names)
         self.config = config
         self.radius = float(config["cone"]["radius_m"])
         self.height = float(config["cone"]["height_m"])
+        self.min_range = float(config.get("range_filter", {}).get("min_m", 0.1))
+        self.max_range = float(config.get("range_filter", {})["max_m"])
         self.z_min = float(config.get("plot", {}).get("yz_z_min_m", 0.0))
         self.z_max = float(config.get("plot", {}).get("yz_z_max_m", 2.0))
         self.figure, axes = plt.subplots(
@@ -1042,10 +1125,29 @@ class RealtimeLocalPlot:
             xy.add_collection(xy_rings)
             xy_centers = xy.scatter([], [], marker="x", s=50, c="tab:blue")
             xy_lidar = xy.scatter([], [], marker="^", s=75, c="red")
-            xy.scatter([0.0], [0.0], marker="+", s=80, c="black")
+            xy.scatter([0.0], [0.0], marker="o", s=50, c="black", label="robot (0, 0)")
+            axis_length = min(max(0.25, 0.12 * self.max_range), 1.0)
+            xy.arrow(0.0, 0.0, axis_length, 0.0, color="tab:red", width=0.008,
+                     head_width=0.08, length_includes_head=True)
+            xy.arrow(0.0, 0.0, 0.0, axis_length, color="tab:green", width=0.008,
+                     head_width=0.08, length_includes_head=True)
+            xy.annotate("robot +x", (axis_length, 0.0), color="tab:red")
+            xy.annotate("robot +y", (0.0, axis_length), color="tab:green")
+            xy.add_patch(MplCircle(
+                (0.0, 0.0), self.max_range, fill=False, linestyle="--",
+                linewidth=1.5, color="tab:orange", label=f"max range {self.max_range:g} m",
+            ))
+            if self.min_range > 0.0:
+                xy.add_patch(MplCircle(
+                    (0.0, 0.0), self.min_range, fill=False, linestyle=":",
+                    linewidth=1.5, color="tab:purple",
+                    label=f"min range {self.min_range:g} m",
+                ))
             xy.set_xlabel("robot x [m]"); xy.set_ylabel("robot y [m]")
             xy.grid(True, alpha=0.3); xy.set_aspect("equal", adjustable="box")
-            xy.set_xlim(-1.0, 1.0); xy.set_ylim(-1.0, 1.0)
+            plot_limit = 1.03 * self.max_range
+            xy.set_xlim(-plot_limit, plot_limit); xy.set_ylim(-plot_limit, plot_limit)
+            xy.legend(loc="best", fontsize=8)
             xy_title = xy.set_title(f"{name}: newest scan / circles", fontsize=10, pad=8)
 
             yz_scan = yz.scatter([], [], s=4, c="0.45", alpha=0.55)
@@ -1119,9 +1221,13 @@ class RealtimeLocalPlot:
             pose = poses[name]
             points = scans[name]
             valid = np.isfinite(points).all(axis=1)
-            scan_robot = transform_to_robot(
+            all_scan_robot = transform_to_robot(
                 np.column_stack((points[valid], np.zeros(np.count_nonzero(valid)))), pose
             )
+            robot_ranges = np.linalg.norm(all_scan_robot[:, :2], axis=1)
+            in_range = ((robot_ranges >= self.min_range)
+                        & (robot_ranges <= self.max_range))
+            scan_robot = all_scan_robot[in_range]
             xy_scan.set_offsets(scan_robot[:, :2]); yz_scan.set_offsets(scan_robot[:, 1:3])
             xy_lidar.set_offsets([[float(pose.get("x", 0.0)), float(pose.get("y", 0.0))]])
             yz_lidar.set_offsets([[float(pose.get("y", 0.0)), float(pose.get("z", 0.0))]])
@@ -1147,17 +1253,6 @@ class RealtimeLocalPlot:
             xy_rings.set_segments(rings); xy_centers.set_offsets(center_array[:, :2])
             yz_cones.set_segments(triangles); yz_sections.set_segments(sections)
             yz_centers.set_offsets(center_array[:, 1:3])
-            # A distant/noisy scan return must not zoom the whole XY view out.
-            # Use only fitted cone rings (and therefore their centers/radii).
-            bounds = rings
-            if self.backgrounds is None and bounds and any(len(item) for item in bounds):
-                combined = np.vstack([item for item in bounds if len(item)])
-                low, high = np.min(combined, axis=0), np.max(combined, axis=0)
-                span = 1.06 * max(float(np.ptp(combined[:, 0])),
-                                  float(np.ptp(combined[:, 1])), 2.0 * self.radius)
-                middle = 0.5 * (low + high)
-                xy.set_xlim(middle[0] - span / 2, middle[0] + span / 2)
-                xy.set_ylim(middle[1] - span / 2, middle[1] + span / 2)
             if len(center_array):
                 y_margin = 1.5 * self.radius
                 y_limits = (float(np.min(center_array[:, 1]) - y_margin),
@@ -1170,7 +1265,9 @@ class RealtimeLocalPlot:
                 self._update_title(name, "xy", f"{name}: newest scan / circles")
                 self._update_title(name, "yz",
                     f"{name}: roll={result['roll_deg']:.3f}°, "
-                    f"pitch={result['pitch_deg']:.3f}°, z={result['z_m']:.3f} m"
+                    f"pitch={result['pitch_deg']:.3f}°, z={result['z_m']:.3f} m\n"
+                    f"roll={result['roll_rad']:.4f} rad, "
+                    f"pitch={result['pitch_rad']:.4f} rad"
                 )
             else:
                 yz_plane.set_data([], [])
@@ -1220,7 +1317,7 @@ def plot_separate_projections(
     try:
         import matplotlib
         import matplotlib.pyplot as plt
-        from matplotlib.patches import Polygon
+        from matplotlib.patches import Circle as MplCircle, Polygon
     except ImportError:
         print("warning: matplotlib is not installed; projection plots skipped", file=sys.stderr)
         return
@@ -1245,12 +1342,14 @@ def plot_separate_projections(
     for index_name, name in enumerate(names):
         result, pose = lidar_results[name], lidar_poses[name]
         points = scans[name]
-        ranges = np.linalg.norm(points, axis=1)
+        all_scan_robot = transform_to_robot(
+            np.column_stack((points, np.zeros(len(points)))), pose
+        )
+        ranges = np.linalg.norm(all_scan_robot[:, :2], axis=1)
         valid = np.isfinite(points).all(axis=1) & (ranges >= min_range) & (ranges <= max_range)
-        filtered = points[valid]
-        if len(filtered) > max_points:
-            filtered = filtered[np.linspace(0, len(filtered) - 1, max_points).astype(int)]
-        scan_robot = transform_to_robot(np.column_stack((filtered, np.zeros(len(filtered)))), pose)
+        scan_robot = all_scan_robot[valid]
+        if len(scan_robot) > max_points:
+            scan_robot = scan_robot[np.linspace(0, len(scan_robot) - 1, max_points).astype(int)]
         cones = result["cones"]
         colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(len(cones), 1)))
         centers = np.array([
@@ -1260,8 +1359,6 @@ def plot_separate_projections(
 
         ax_xy = xy_axes[0, index_name]
         ax_xy.scatter(scan_robot[:, 0], scan_robot[:, 1], s=5, c="0.55", label="range-filtered scan")
-        bounds = [scan_robot[:, :2], np.array(((0.0, 0.0),)),
-                  np.array(((float(pose.get("x", 0.0)), float(pose.get("y", 0.0))),))]
         theta = np.linspace(0.0, 2.0 * math.pi, 100)
         for cone_index, (cone, color, center) in enumerate(zip(cones, colors, centers), 1):
             r = float(cone["circle_radius_m"])
@@ -1270,19 +1367,20 @@ def plot_separate_projections(
                 cone["circle_center_y_m"] + r * np.sin(theta), np.zeros_like(theta),
             ))
             ring = transform_to_robot(local_ring, pose)
-            bounds.append(ring[:, :2])
             ax_xy.plot(ring[:, 0], ring[:, 1], color=color, linewidth=2)
             ax_xy.scatter(center[0], center[1], marker="x", s=55, color=color)
             ax_xy.annotate(f"C{cone_index}\nr={r:.3f}", center[:2], color=color)
         ax_xy.scatter(float(pose.get("x", 0.0)), float(pose.get("y", 0.0)),
                       marker="^", s=80, c="red", label="LiDAR")
-        ax_xy.scatter(0.0, 0.0, marker="+", s=90, c="black", label="robot origin")
-        all_xy = np.vstack(bounds)
-        low, high = np.min(all_xy, axis=0), np.max(all_xy, axis=0)
-        span = 1.08 * max(float(high[0] - low[0]), float(high[1] - low[1]), 2 * cone_radius)
-        middle = 0.5 * (low + high)
-        ax_xy.set_xlim(middle[0] - span / 2, middle[0] + span / 2)
-        ax_xy.set_ylim(middle[1] - span / 2, middle[1] + span / 2)
+        ax_xy.scatter(0.0, 0.0, marker="o", s=55, c="black", label="robot (0, 0)")
+        ax_xy.add_patch(MplCircle((0.0, 0.0), max_range, fill=False, linestyle="--",
+                                  color="tab:orange", label=f"max range {max_range:g} m"))
+        if min_range > 0.0:
+            ax_xy.add_patch(MplCircle((0.0, 0.0), min_range, fill=False, linestyle=":",
+                                      color="tab:purple", label=f"min range {min_range:g} m"))
+        plot_limit = 1.03 * max_range
+        ax_xy.set_xlim(-plot_limit, plot_limit)
+        ax_xy.set_ylim(-plot_limit, plot_limit)
         ax_xy.set_aspect("equal", adjustable="box")
         ax_xy.set_title(f"{name}: circles in robot TF (XY)")
         ax_xy.set_xlabel("robot x [m]"); ax_xy.set_ylabel("robot y [m]")
@@ -1355,7 +1453,7 @@ def load_yaml(path: Path) -> dict:
 
 
 def process_lidar(
-    points: np.ndarray, config: dict, verbose: bool = True
+    points: np.ndarray, config: dict, verbose: bool = True, pose: dict | None = None
 ) -> Tuple[dict, PlaneResult]:
     cone = config["cone"]
     range_cfg = config.get("range_filter", {})
@@ -1371,19 +1469,30 @@ def process_lidar(
     if not 0 <= min_range < max_range:
         raise ValueError("range_filter must satisfy 0 <= min_m < max_m")
 
+    range_points = None
+    if pose is not None:
+        robot_points = transform_to_robot(
+            np.column_stack((points, np.zeros(len(points)))), pose
+        )
+        range_points = robot_points[:, :2]
     clusters = filter_and_cluster(
         points, min_range, max_range,
         float(cluster_cfg.get("gap_m", 0.08)),
         int(cluster_cfg.get("min_points", 5)),
         float(cluster_cfg.get("max_width_m", 0.5)),
+        range_points=range_points,
     )
     diagnostics: List[str] = []
+    min_inlier_ratio = float(circle_cfg.get("min_inlier_ratio", 0.7))
+    if not 0.0 <= min_inlier_ratio <= 1.0:
+        raise ValueError("circle.min_inlier_ratio must be between 0 and 1")
     sections = extract_sections(
         clusters, radius, height,
         float(circle_cfg.get("min_radius_m", 0.015)),
         float(circle_cfg.get("inlier_threshold_m", 0.01)),
         int(circle_cfg.get("ransac_iterations", 500)),
         int(circle_cfg.get("min_inliers", 5)),
+        min_inlier_ratio,
         int(circle_cfg.get("random_seed", 0)),
         diagnostics,
     )
@@ -1524,15 +1633,16 @@ def run_realtime(
                 name: np.array(scan, copy=True) for name, scan in latest_scans.items()
             }
             futures = {
-                calculation_executor.submit(process_lidar, scan, processing_config, False): name
+                calculation_executor.submit(
+                    process_lidar, scan, processing_config, False,
+                    calibrated_config["lidars"][name],
+                ): name
                 for name, scan in scan_snapshot.items()
             }
             for future in as_completed(futures):
                 name = futures[future]
                 try:
                     result, plane = future.result()
-                    result["roll_rad"] = plane.roll
-                    result["pitch_rad"] = plane.pitch
                     last_results[name] = result
                     pose = calibrated_config["lidars"][name]
                     pose["roll"], pose["pitch"], pose["z"] = (
@@ -1629,10 +1739,28 @@ def main(argv: Iterable[str] | None = None) -> int:
         return run_realtime(lidar_config, calib_config, lidar_topics, args.calib_config)
 
     duration = float(calib_config.get("collect_duration_sec", 5.0))
-    scans = collect_ros_scans(lidar_topics, duration)
+    temporal_median_cfg = calib_config.get("temporal_median", {})
+    temporal_median_enabled = bool(temporal_median_cfg.get("enabled", False))
+    temporal_median_min_valid_frames = int(
+        temporal_median_cfg.get("min_valid_frames", 1)
+    )
+    scans = collect_ros_scans(
+        lidar_topics,
+        duration,
+        temporal_median_enabled,
+        temporal_median_min_valid_frames,
+    )
     calibrated_config = copy.deepcopy(lidar_config)
     output = {
-        "calibration_mode": "stationary_cone_circle_plane",
+        "calibration_mode": (
+            "stationary_temporal_median_cone_circle_plane"
+            if temporal_median_enabled
+            else "stationary_accumulated_cone_circle_plane"
+        ),
+        "temporal_median": {
+            "enabled": temporal_median_enabled,
+            "min_valid_frames": temporal_median_min_valid_frames,
+        },
         "cone": copy.deepcopy(calib_config.get("cone", {})),
         "success": True,
         "lidars": {},
@@ -1644,14 +1772,12 @@ def main(argv: Iterable[str] | None = None) -> int:
             output["lidars"][name] = {"success": False, "reason": "no_scan_received"}
             continue
         try:
-            result, plane = process_lidar(scans[name], calib_config)
+            result, plane = process_lidar(scans[name], calib_config, pose=poses[name])
         except (RuntimeError, ValueError) as error:
             output["success"] = False
             output["lidars"][name] = {"success": False, "reason": str(error)}
             print(f"  failed: {error}")
             continue
-        result["roll_rad"] = plane.roll
-        result["pitch_rad"] = plane.pitch
         output["lidars"][name] = result
         calibrated_pose = calibrated_config["lidars"][name]
         calibrated_pose["roll"] = float(plane.roll)

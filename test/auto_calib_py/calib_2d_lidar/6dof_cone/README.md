@@ -51,9 +51,11 @@ range_filter:
 The most useful detection tuning parameters are:
 
 - `clustering.gap_m`: distance that separates adjacent scan objects
+- `range_filter.min_m/max_m`: robot-origin XY detection-distance limits
 - `clustering.max_width_m`: rejects clusters wider than a cone
 - `circle.inlier_threshold_m`: maximum radial error of a circle inlier
 - `circle.min_inliers`: minimum scan points required for a circle
+- `circle.min_inlier_ratio`: minimum fraction of a cluster that must fit the circle
 - `quality.max_circle_rmse_m`: rejects poorly fitted circles
 - `quality.max_plane_rmse_m`: rejects an inconsistent final plane
 
@@ -94,6 +96,26 @@ For Docker, publish the port with `-p 8050:8050`, or add
 No PNG or repeated YAML is created. Close the live window or press
 Ctrl+C to stop; the last fully successful result is then written once. Set
 `enabled: false` for the normal collect-and-calibrate workflow.
+
+With `realtime.enabled: false`, every finite return received during
+`collect_duration_sec` is accumulated and sorted by scan angle before circle
+extraction. The robot and calibration cones must remain stationary throughout
+this interval.
+
+Temporal median filtering can instead reduce the thickness caused by repeated
+range measurements. It produces one median range per LaserScan beam and is
+used only when realtime mode is disabled:
+
+```yaml
+temporal_median:
+  enabled: true
+  min_valid_frames: 1
+```
+
+Set `enabled: false` to retain all points from all collected frames.
+`min_valid_frames` drops a beam unless at least that many frames contain a
+finite range for it. All collected frames must have the same LaserScan beam
+count and angular geometry.
 
 The LiDAR circle/plane calculations run in separate worker processes, while
 Plotly serialization runs outside the ROS/Matplotlib loop. If rendering is

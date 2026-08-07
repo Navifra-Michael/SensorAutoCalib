@@ -1,10 +1,17 @@
-collect_duration_sec: 5.0
+collect_duration_sec: 10.0
 
-# Processing mode. Realtime uses only the newest LaserScan frame; it does not
-# accumulate scans or compute a temporal median. Close the window or press
-# Ctrl+C to stop.
-realtime:
+# Stationary mode only. When enabled, replace repeated measurements at each
+# LaserScan beam angle with one median range instead of accumulating all frames.
+temporal_median:
   enabled: true
+  # A beam is kept only when this many collected frames contain a finite range.
+  min_valid_frames: 1
+
+# Processing mode. Realtime uses only the newest LaserScan frame. When false,
+# every finite point received during collect_duration_sec is accumulated.
+# Close the window or press Ctrl+C to stop realtime mode.
+realtime:
+  enabled: false
   update_interval_sec: 0.1
   # Faster single-frame RANSAC for realtime display. The normal stationary
   # mode continues to use circle.ransac_iterations below.
@@ -28,13 +35,13 @@ calibrated_config_yaml: calibrated_config.yaml
 
 # Physical dimensions of every calibration cone.
 cone:
-  radius_m: 0.5
-  height_m: 1.0
+  radius_m: 0.125
+  height_m: 0.77
 
-# Only returns in this radial distance interval are considered.
+# Only returns in this robot-origin XY distance interval are considered.
 range_filter:
-  min_m: 0.5
-  max_m: 7.0
+  min_m: 1.0
+  max_m: 4.0
 
 # Consecutive LaserScan points are split into object candidates.
 clustering:
@@ -46,9 +53,11 @@ clustering:
 
 # Circle extraction from each object candidate.
 circle:
-  min_radius_m: 0.015
+  min_radius_m: 0.05
   inlier_threshold_m: 0.01
-  min_inliers: 5
+  min_inliers: 15
+  # Prevent a few points inside a larger object cluster from being accepted.
+  min_inlier_ratio: 0.9
   ransac_iterations: 500
   random_seed: 0
 
@@ -56,7 +65,7 @@ circle:
 quality:
   min_cones: 3
   max_circle_rmse_m: 0.01
-  max_plane_rmse_m: 0.02
+  max_plane_rmse_m: 0.15
 
 # Visualize each LiDAR's scan/circles and inferred 3D center plane.
 plot:
